@@ -27,6 +27,7 @@ from atopile.cli import (
     build,
     configure,
     create,
+    docs,
     inspect_,
     install,
     kicad_ipc,
@@ -152,6 +153,7 @@ app.command()(build.build)
 app.add_typer(create.create_app, name="create")
 app.command(deprecated=True, hidden=True)(install.install)
 app.command(deprecated=True, hidden=True)(configure.configure)
+app.command()(docs.docs)
 app.command()(inspect_.inspect)
 app.command()(view.view)
 app.add_typer(package.package_app, name="package", hidden=True)

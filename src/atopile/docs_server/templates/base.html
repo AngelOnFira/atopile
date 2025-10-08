@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Atopile Documentation{% endblock %}</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <nav class="sidebar">
+        <div class="sidebar-header">
+            <h2>📚 Atopile Docs</h2>
+            <div class="search-box">
+                <input type="text" id="search-input" placeholder="Search modules..." />
+            </div>
+        </div>
+        
+        <div class="nav-section">
+            <h3>Project: {{ project_name }}</h3>
+            <div class="module-tree">
+                {% block navigation %}
+                <ul class="module-list">
+                    {% for module in modules %}
+                    <li>
+                        <a href="/module/{{ module.path }}" class="{% if module.path == current_module %}active{% endif %}">
+                            <span class="module-icon">{{ module.icon }}</span>
+                            {{ module.name }}
+                        </a>
+                    </li>
+                    {% endfor %}
+                </ul>
+                {% endblock %}
+            </div>
+        </div>
+    </nav>
+    
+    <main class="content">
+        {% block content %}
+        <!-- Main content goes here -->
+        {% endblock %}
+    </main>
+    
+    <script>
+        // Simple search functionality
+        document.getElementById('search-input').addEventListener('input', function(e) {
+            const searchTerm = e.target.value.toLowerCase();
+            const modules = document.querySelectorAll('.module-list li');
+            
+            modules.forEach(module => {
+                const text = module.textContent.toLowerCase();
+                if (text.includes(searchTerm)) {
+                    module.style.display = 'block';
+                } else {
+                    module.style.display = 'none';
+                }
+            });
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+
+{% block title %}{{ project_name }} - Atopile Documentation{% endblock %}
+
+{% block content %}
+<div class="landing">
+    <h1>{{ project_name }} Documentation</h1>
+    <p>Welcome to the documentation for your Atopile project.</p>
+    
+    <div class="stats">
+        <div class="stat-card">
+            <div class="stat-number">{{ stats.total_modules }}</div>
+            <div class="stat-label">Modules</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-number">{{ stats.total_interfaces }}</div>
+            <div class="stat-label">Interfaces</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-number">{{ stats.total_components }}</div>
+            <div class="stat-label">Components</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-number">{{ stats.total_files }}</div>
+            <div class="stat-label">Files</div>
+        </div>
+    </div>
+    
+    <div class="section">
+        <h2><span class="section-icon">📁</span> Project Structure</h2>
+        <div class="member-list">
+            {% for file in files %}
+            <div class="member-item">
+                <span class="member-name">{{ file.path }}</span>
+                <span class="member-type">({{ file.module_count }} modules)</span>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    
+    <div class="section">
+        <h2><span class="section-icon">🔧</span> All Modules</h2>
+        <div class="member-list">
+            {% for module in all_modules %}
+            <div class="member-item">
+                <a href="/module/{{ module.path }}" style="text-decoration: none; color: inherit;">
+                    <span class="member-name">{{ module.name }}</span>
+                    <span class="member-type">{{ module.type }}</span>
+                    {% if module.docstring %}
+                    <div style="margin-top: 5px; color: var(--text-secondary); font-size: 0.875rem;">
+                        {{ module.docstring | truncate(100) }}
+                    </div>
+                    {% endif %}
+                </a>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% endblock %}

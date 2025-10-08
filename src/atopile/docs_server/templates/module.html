@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+
+{% block title %}{{ module.name }} - Atopile Documentation{% endblock %}
+
+{% block content %}
+<div class="module-header">
+    <span class="module-type">{{ module.type }}</span>
+    <h1>{{ module.name }}</h1>
+    <div class="module-path">{{ module.file_path }}</div>
+</div>
+
+{% if module.docstring %}
+<div class="docstring">
+    <p>{{ module.docstring }}</p>
+</div>
+{% endif %}
+
+{% if module.source_code %}
+<div class="section">
+    <h2><span class="section-icon">📄</span> Source</h2>
+    <div class="code-block">{{ module.source_code }}</div>
+</div>
+{% endif %}
+
+{% if module.pins %}
+<div class="section">
+    <h2><span class="section-icon">📌</span> Pins</h2>
+    <div class="member-list">
+        {% for pin in module.pins %}
+        <div class="member-item">
+            <span class="member-name">{{ pin }}</span>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+{% if module.signals %}
+<div class="section">
+    <h2><span class="section-icon">📡</span> Signals</h2>
+    <div class="member-list">
+        {% for signal in module.signals %}
+        <div class="member-item">
+            <span class="member-name">{{ signal }}</span>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+{% if module.parameters %}
+<div class="section">
+    <h2><span class="section-icon">⚙️</span> Parameters</h2>
+    <div class="member-list">
+        {% for param in module.parameters %}
+        <div class="member-item">
+            <span class="member-name">{{ param.name }}</span>
+            {% if param.type %}
+            <span class="member-type">: {{ param.type }}</span>
+            {% endif %}
+            {% if param.value %}
+            <span class="member-value"> = {{ param.value }}</span>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+{% if module.instances %}
+<div class="section">
+    <h2><span class="section-icon">🔗</span> Instances</h2>
+    <div class="member-list">
+        {% for instance in module.instances %}
+        <div class="member-item">
+            <span class="member-name">{{ instance.name }}</span>
+            <span class="member-type">: {{ instance.type }}</span>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+{% if module.connections %}
+<div class="section">
+    <h2><span class="section-icon">🔌</span> Connections</h2>
+    <div class="member-list">
+        {% for conn in module.connections %}
+        <div class="member-item">
+            <span class="member-name" style="font-family: monospace;">{{ conn }}</span>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+{% if module.assertions %}
+<div class="section">
+    <h2><span class="section-icon">✅</span> Assertions</h2>
+    <div class="member-list">
+        {% for assertion in module.assertions %}
+        <div class="member-item">
+            <span class="member-name" style="font-family: monospace;">{{ assertion }}</span>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+{% endblock %}
