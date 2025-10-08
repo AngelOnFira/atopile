@@ -19,16 +19,76 @@
             <h3>Project: {{ project_name }}</h3>
             <div class="module-tree">
                 {% block navigation %}
-                <ul class="module-list">
-                    {% for module in modules %}
-                    <li>
-                        <a href="/module/{{ module.path }}" class="{% if module.path == current_module %}active{% endif %}">
-                            <span class="module-icon">{{ module.icon }}</span>
-                            {{ module.name }}
-                        </a>
-                    </li>
-                    {% endfor %}
-                </ul>
+                
+                {% if organized_modules %}
+                    <!-- Project Modules -->
+                    {% if organized_modules.project %}
+                    <div class="nav-category">
+                        <h4 class="category-header">📱 Project</h4>
+                        <ul class="module-list">
+                            {% for module in organized_modules.project %}
+                            <li>
+                                <a href="/module/{{ module.path }}" class="{% if module.path == current_module %}active{% endif %}">
+                                    <span class="module-icon">{{ module.icon }}</span>
+                                    {{ module.name }}
+                                </a>
+                            </li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                    {% endif %}
+                    
+                    <!-- Dependencies -->
+                    {% if organized_modules.dependencies %}
+                    <div class="nav-category">
+                        <h4 class="category-header">📦 Dependencies</h4>
+                        <ul class="module-list collapsible">
+                            {% for module in organized_modules.dependencies[:10] %}
+                            <li>
+                                <a href="/module/{{ module.path }}" class="{% if module.path == current_module %}active{% endif %}">
+                                    <span class="module-icon">{{ module.icon }}</span>
+                                    {{ module.name }}
+                                </a>
+                            </li>
+                            {% endfor %}
+                            {% if organized_modules.dependencies|length > 10 %}
+                            <li class="show-more">+ {{ organized_modules.dependencies|length - 10 }} more...</li>
+                            {% endif %}
+                        </ul>
+                    </div>
+                    {% endif %}
+                    
+                    <!-- Standard Library -->
+                    {% if organized_modules.standard_library %}
+                    <div class="nav-category">
+                        <h4 class="category-header">🔧 Standard Library</h4>
+                        <ul class="module-list collapsible">
+                            {% for module in organized_modules.standard_library %}
+                            <li>
+                                <a href="/module/{{ module.path }}" class="{% if module.path == current_module %}active{% endif %}">
+                                    <span class="module-icon">{{ module.icon }}</span>
+                                    {{ module.name }}
+                                </a>
+                            </li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                    {% endif %}
+                    
+                {% else %}
+                    <!-- Fallback: show all modules -->
+                    <ul class="module-list">
+                        {% for module in modules %}
+                        <li>
+                            <a href="/module/{{ module.path }}" class="{% if module.path == current_module %}active{% endif %}">
+                                <span class="module-icon">{{ module.icon }}</span>
+                                {{ module.name }}
+                            </a>
+                        </li>
+                        {% endfor %}
+                    </ul>
+                {% endif %}
+                
                 {% endblock %}
             </div>
         </div>

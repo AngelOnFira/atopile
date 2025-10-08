@@ -15,6 +15,60 @@
 </div>
 {% endif %}
 
+{% if module.inheritance_chain %}
+<div class="section">
+    <h2><span class="section-icon">🏗️</span> Inheritance</h2>
+    <div class="inheritance-chain">
+        {% for parent in module.inheritance_chain %}
+        <div class="inheritance-item">
+            <span class="module-icon">{{ parent.icon }}</span>
+            {% if parent.path %}
+            <a href="/module/{{ parent.path }}" class="inheritance-link">{{ parent.name }}</a>
+            {% else %}
+            <span class="inheritance-external">{{ parent.name }}</span>
+            {% endif %}
+            <span class="inheritance-type">({{ parent.type }})</span>
+        </div>
+        {% if not loop.last %}
+        <div class="inheritance-arrow">↑</div>
+        {% endif %}
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+{% if module.used_by %}
+<div class="section">
+    <h2><span class="section-icon">👥</span> Used By</h2>
+    <div class="member-list">
+        {% for child in module.used_by %}
+        <div class="member-item">
+            <span class="module-icon">{{ child.icon }}</span>
+            {% if child.path %}
+            <a href="/module/{{ child.path }}" class="member-name">{{ child.name }}</a>
+            {% else %}
+            <span class="member-name">{{ child.name }}</span>
+            {% endif %}
+            <span class="member-type">({{ child.type }})</span>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+{% if module.imports %}
+<div class="section">
+    <h2><span class="section-icon">📦</span> Imports</h2>
+    <div class="member-list">
+        {% for import in module.imports %}
+        <div class="member-item">
+            <span class="member-name" style="font-family: monospace;">{{ import }}</span>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
 {% if module.source_code %}
 <div class="section">
     <h2><span class="section-icon">📄</span> Source</h2>

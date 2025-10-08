@@ -15,7 +15,7 @@ class DocHandler(http.server.SimpleHTTPRequestHandler):
     """Custom handler for serving documentation."""
     
     def __init__(self, *args, directory=None, **kwargs):
-        self.docs_dir = directory
+        self.docs_dir = Path(directory) if directory else Path.cwd()
         super().__init__(*args, directory=directory, **kwargs)
         
     def do_GET(self):

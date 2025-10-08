@@ -41,6 +41,9 @@ class DocGenerator:
         # Scan for .ato files
         self._scan_project()
         
+        # Build inheritance relationships
+        self._build_inheritance_chains()
+        
         # Generate pages
         self._generate_index()
         self._generate_module_pages()
@@ -99,19 +102,25 @@ class DocGenerator:
             'instances': [],
             'connections': [],
             'assertions': [],
-            'source_code': None
+            'source_code': None,
+            'parent_module': None,       # Direct parent from 'from X' syntax
+            'inheritance_chain': [],     # Full chain of inheritance
+            'imports': [],              # Import statements used
+            'used_by': []              # Modules that inherit from this one
         }
         
-        # Try to get source code snippet
+        # Try to get source code snippet and inheritance info
         try:
             with open(file_path, 'r') as f:
                 content = f.read()
-                # Simple extraction - can be improved
+                # Parse inheritance and imports
+                data.update(self._parse_file_metadata(content, str(ref)))
+                
+                # Simple source code extraction - can be improved
                 lines = content.split('\n')
                 for i, line in enumerate(lines):
                     if f"module {ref}" in line or f"interface {ref}" in line:
-                        # Get the module definition
-                        start = i
+                        # Get the module definition  
                         indent = len(line) - len(line.lstrip())
                         source_lines = [line]
                         
@@ -151,6 +160,13 @@ class DocGenerator:
                             if next_line.startswith(('"""', "'''")):
                                 docstring = next_line.strip('"\'')
                         
+                        # Parse inheritance for this module
+                        parent_module = None
+                        if ' from ' in stripped:
+                            parts = stripped.split(' from ')
+                            if len(parts) == 2:
+                                parent_module = parts[1].rstrip(':').strip()
+                        
                         module_data = {
                             'name': name,
                             'type': block_type.title(),
@@ -164,7 +180,11 @@ class DocGenerator:
                             'instances': [],
                             'connections': [],
                             'assertions': [],
-                            'source_code': None
+                            'source_code': None,
+                            'parent_module': parent_module,
+                            'inheritance_chain': [],
+                            'imports': self._parse_file_metadata(content, name)['imports'],
+                            'used_by': []
                         }
                         
                         self.modules.append(module_data)
@@ -184,10 +204,123 @@ class DocGenerator:
             'App': '📱'
         }
         return icons.get(type_name, '📄')
+    
+    def _parse_file_metadata(self, content: str, module_name: str) -> Dict[str, Any]:
+        """Parse imports and inheritance from file content."""
+        result = {
+            'parent_module': None,
+            'imports': []
+        }
+        
+        lines = content.split('\n')
+        
+        for line in lines:
+            stripped = line.strip()
+            
+            # Parse imports
+            if stripped.startswith('import ') or stripped.startswith('from '):
+                result['imports'].append(stripped)
+            
+            # Parse inheritance for this specific module
+            if f"module {module_name} from " in stripped or f"interface {module_name} from " in stripped:
+                # Extract parent module name
+                parts = stripped.split(' from ')
+                if len(parts) == 2:
+                    parent = parts[1].rstrip(':').strip()
+                    result['parent_module'] = parent
+        
+        return result
+    
+    def _build_inheritance_chains(self):
+        """Build inheritance chains and used_by relationships after all modules are loaded."""
+        # Create lookup map for faster access
+        module_lookup = {m['name']: m for m in self.modules}
+        
+        for module in self.modules:
+            if parent_name := module.get('parent_module'):
+                # Build inheritance chain
+                chain = []
+                current = parent_name
+                visited = set()
+                
+                while current and current not in visited:
+                    visited.add(current)
+                    if parent_module := module_lookup.get(current):
+                        chain.append({
+                            'name': parent_module['name'],
+                            'type': parent_module['type'],
+                            'icon': parent_module['icon'],
+                            'path': parent_module.get('path', ''),
+                            'file_path': parent_module.get('file_path', '')
+                        })
+                        current = parent_module.get('parent_module')
+                    else:
+                        # Parent not found in current project, add as external
+                        chain.append({
+                            'name': current,
+                            'type': 'External',
+                            'icon': '📦',
+                            'path': '',
+                            'file_path': ''
+                        })
+                        break
+                
+                module['inheritance_chain'] = chain
+                
+                # Update used_by relationships
+                if parent_name in module_lookup:
+                    parent_module = module_lookup[parent_name]
+                    if 'used_by' not in parent_module:
+                        parent_module['used_by'] = []
+                    parent_module['used_by'].append({
+                        'name': module['name'],
+                        'type': module['type'],
+                        'icon': module['icon'],
+                        'path': module.get('path', ''),
+                        'file_path': module.get('file_path', '')
+                    })
+    
+    def _organize_modules(self) -> Dict[str, List[Dict]]:
+        """Organize modules into categories for better navigation."""
+        organized = {
+            'project': [],           # Main project modules
+            'dependencies': [],      # External package modules  
+            'standard_library': [], # Built-in atopile modules
+            'parts': []             # Hardware part packages
+        }
+        
+        for module in self.modules:
+            file_path = module['file_path']
+            
+            # Categorize based on file path patterns
+            if file_path.startswith('.ato/modules/'):
+                # External dependency
+                organized['dependencies'].append(module)
+            elif any(keyword in file_path.lower() for keyword in ['part', 'package']):
+                # Hardware part
+                organized['parts'].append(module)
+            elif file_path.count('/') <= 1 and not file_path.startswith('.'):
+                # Project module (in root or one level deep)
+                organized['project'].append(module)
+            elif any(std_name in file_path for std_name in ['common/', 'interfaces/', 'debug/']):
+                # Standard library modules
+                organized['standard_library'].append(module)
+            else:
+                # Default to dependencies
+                organized['dependencies'].append(module)
+        
+        # Sort each category
+        for category in organized.values():
+            category.sort(key=lambda x: x['name'])
+            
+        return organized
         
     def _generate_index(self):
         """Generate the index page."""
         template = self.env.get_template('index.html')
+        
+        # Organize modules into categories
+        organized_modules = self._organize_modules()
         
         # Calculate statistics
         stats = {
@@ -199,7 +332,8 @@ class DocGenerator:
         
         html = template.render(
             project_name=self.project_path.name,
-            modules=self.modules,
+            modules=organized_modules['project'],
+            organized_modules=organized_modules,
             all_modules=sorted(self.modules, key=lambda x: x['name']),
             files=sorted(self.files, key=lambda x: x['path']),
             stats=stats
@@ -212,6 +346,9 @@ class DocGenerator:
         template = self.env.get_template('module.html')
         module_dir = self.output_dir / 'module'
         
+        # Get organized modules for consistent navigation
+        organized_modules = self._organize_modules()
+        
         for module in self.modules:
             # Create module directory structure
             module_path = module_dir / module['path']
@@ -220,7 +357,8 @@ class DocGenerator:
             html = template.render(
                 project_name=self.project_path.name,
                 module=module,
-                modules=self.modules,
+                modules=organized_modules['project'],
+                organized_modules=organized_modules,
                 current_module=module['path']
             )
             
