@@ -23,10 +23,27 @@
 //!     }
 //! }
 //! ```
+//!
+//! # Chumsky Parser (feature: `chumsky`)
+//!
+//! An alternative parser implementation using chumsky with error recovery:
+//!
+//! ```ignore
+//! use ato_parser::chumsky;
+//!
+//! let (ast, errors) = chumsky::parse(source);
+//! if let Some(file) = ast {
+//!     // AST available even with errors (error recovery)
+//! }
+//! ```
 
 pub mod ast;
 pub mod error;
 mod parse;
+
+/// Chumsky-based parser with error recovery (requires `chumsky` feature).
+#[cfg(feature = "chumsky")]
+pub mod chumsky;
 
 pub use ast::*;
 pub use error::{ParseError, ParseResult};

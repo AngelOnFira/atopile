@@ -4,7 +4,7 @@ use logos::Logos;
 use serde::{Deserialize, Serialize};
 
 /// A token with its kind, span, and optional text.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Token {
     pub kind: TokenKind,
     pub span: Span,
@@ -12,7 +12,7 @@ pub struct Token {
 }
 
 /// Source location span.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Span {
     /// Byte offset of the start of the token.
     pub start: usize,
