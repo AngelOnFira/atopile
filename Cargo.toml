@@ -21,3 +21,4 @@ num-traits = "0.2"
 # Internal crates
 ato-lexer = { path = "crates/ato-lexer" }
 ato-domain = { path = "crates/ato-domain" }
+ato-solver = { path = "crates/ato-solver" }

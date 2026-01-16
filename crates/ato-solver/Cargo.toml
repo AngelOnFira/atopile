@@ -1,0 +1,14 @@
+[package]
+name = "ato-solver"
+version = "0.1.0"
+edition = "2021"
+description = "Constraint solver for Ato parameter resolution"
+license = "MIT"
+
+[dependencies]
+ato-domain = { path = "../ato-domain" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = "2"
+
+[dev-dependencies]
