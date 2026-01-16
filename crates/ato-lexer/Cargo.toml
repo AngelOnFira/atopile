@@ -1,0 +1,14 @@
+[package]
+name = "ato-lexer"
+version.workspace = true
+edition = "2024"
+license.workspace = true
+description = "Lexer for the Ato hardware description language"
+
+[dependencies]
+logos = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
