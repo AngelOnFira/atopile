@@ -1,0 +1,15 @@
+[package]
+name = "ato-parser"
+version.workspace = true
+edition = "2024"
+license.workspace = true
+description = "Parser for the Ato hardware description language"
+
+[dependencies]
+ato-lexer = { workspace = true }
+thiserror = { workspace = true }
+miette = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

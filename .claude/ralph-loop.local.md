@@ -1,37 +1,9 @@
 ---
 active: true
 iteration: 2
-max_iterations: 0
-completion_promise: null
-started_at: "2026-01-16T16:52:19Z"
+max_iterations: 50
+completion_promise: "PARSER_COMPLETE"
+started_at: "2026-01-16T17:12:45Z"
 ---
 
-  # Task: Implement Ato Lexer in Rust
-
-  Create a lexer for the Ato DSL in Rust using the  crate.
-
-  ## Requirements
-  1. Tokenize all tokens from the grammar (see src/atopile/parser/AtoLexer.g4)
-  2. Handle Python-style INDENT/DEDENT with indentation tracking
-  3. Track source locations (line, column, byte offset)
-  4. Support string literals, numbers (int, float, hex, bin, oct)
-  5. Handle physical quantities (10kohm, 5V, 100nF)
-  6. Generate helpful error messages for invalid tokens
-
-  ## Structure
-  -  - Main lexer implementation
-  -  - Token enum
-  -  - Source location tracking
-  -  - Test suite
-
-  ## Tests Must Pass
-  - 
-  - Parse all .ato files in examples/ without panic
-  - Benchmark: lex 10,000 lines in < 10ms
-
-  ## Completion Criteria
-  Output <promise>LEXER_COMPLETE</promise> when:
-  - All tokens from grammar are handled
-  - INDENT/DEDENT works correctly
-  - All tests pass
-  - Examples parse without error
+Implement Ato Parser in Rust. Create crates/ato-parser that depends on ato-lexer. Define complete AST types with serde serialization. Implement recursive descent parser following src/atopile/parser/AtoParser.g4 grammar. Use miette crate for error messages with source spans. Handle all statement types: imports, block definitions (module/component/interface), declarations, assignments, connections, retype, assertions, for loops, traits, new expressions, pragmas. Support all expression types: arithmetic, literals with units, field references, ranges. Structure: Cargo.toml, src/lib.rs, src/ast.rs, src/error.rs, src/parse/mod.rs with expr.rs stmt.rs types.rs, and tests/. Tests must pass and parser must work on example .ato files. After completion: git add, commit, push to rust-test, then output the completion promise. Output PARSER_COMPLETE when: full grammar coverage, all tests pass, good error messages, parses examples, committed and pushed.
