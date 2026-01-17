@@ -13,7 +13,7 @@ This is NOT an incremental migration - we are building a completely new Rust too
 | `ato-domain` | ✅ Complete | Quantity/interval/set types |
 | `ato-solver` | ✅ Complete | Constraint solver with simplification |
 | `ato-ir` | ✅ Complete | Intermediate representation |
-| `ato-sema` | 🔲 Not started | Semantic analysis |
+| `ato-sema` | ✅ Complete | Semantic analysis |
 | `ato-cli` | 🔲 Not started | Main compiler CLI |
 
 ---
@@ -168,7 +168,7 @@ Create a parser that produces a typed AST.
 
 ---
 
-## Phase 3: Semantic Analysis 🔲 IN PROGRESS
+## Phase 3: Semantic Analysis ✅ COMPLETE
 
 ### Prompt 5: Intermediate Representation
 
@@ -243,17 +243,12 @@ Lower parsed AST to IR with full semantic checking.
 - Can analyze example .ato files without false errors
 - Catches real errors (undefined names, type mismatches)
 
-## Completion Criteria
-Output <promise>SEMA_COMPLETE</promise> when:
-- Import resolution works
-- Name resolution works
-- Type checking catches errors
-- AST lowers to IR correctly
+## Completion: SEMA_COMPLETE ✅
 ```
 
 ---
 
-## Phase 4: CLI and End-to-End Testing 🔲 NOT STARTED
+## Phase 4: CLI and End-to-End Testing 🔲 IN PROGRESS
 
 ### Prompt 7: CLI Foundation
 
@@ -371,7 +366,7 @@ crates/
 ├── ato-domain/         # ✅ Quantity/interval/set types
 ├── ato-solver/         # ✅ Constraint solver with simplification
 ├── ato-ir/             # ✅ Intermediate representation (design graph)
-├── ato-sema/           # 🔲 Semantic analysis (name resolution, type checking)
+├── ato-sema/           # ✅ Semantic analysis (name resolution, type checking)
 └── ato-cli/            # 🔲 Main compiler binary (orchestrates everything)
 
 tests/
@@ -445,7 +440,7 @@ insta = "1"              # Snapshot testing
 ### Up Next (in order)
 5. ✅ ~~Cleanup~~ - Remove ato-py, consolidate parser to chumsky only
 6. ✅ ~~Create ato-ir~~ - Intermediate representation for designs
-7. 🔲 **Create ato-sema** - Semantic analysis (imports, names, types)
+7. ✅ ~~Create ato-sema~~ - Semantic analysis (imports, names, types)
 8. 🔲 **Create ato-cli** - Main `ato` binary that ties everything together
 9. 🔲 **E2E tests** - Comprehensive test suite validating full pipeline
 10. 🔲 **Output generation** - KiCad, BOM, netlist (future)
