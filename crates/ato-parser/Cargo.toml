@@ -5,17 +5,13 @@ edition = "2024"
 license.workspace = true
 description = "Parser for the Ato hardware description language"
 
-[features]
-default = []
-chumsky = ["dep:chumsky", "dep:ariadne"]
-
 [dependencies]
 ato-lexer = { workspace = true }
 thiserror = { workspace = true }
 miette = { workspace = true }
 serde = { workspace = true }
-chumsky = { workspace = true, optional = true }
-ariadne = { workspace = true, optional = true }
+chumsky = { workspace = true }
+ariadne = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

@@ -19,8 +19,28 @@ pub fn tok(kind: TokenKind) -> impl Parser<Token, Token, Error = Simple<Token>> 
 }
 
 /// Parse an identifier.
+/// Some reserved keywords can be used as identifiers in certain contexts (e.g., template arguments).
 pub fn identifier() -> impl Parser<Token, Identifier, Error = Simple<Token>> + Clone {
-    tok(TokenKind::Name).map_with_span(|t: Token, span: Range<usize>| Identifier {
+    filter(|t: &Token| {
+        matches!(
+            t.kind,
+            TokenKind::Name
+                | TokenKind::Int
+                | TokenKind::Float
+                | TokenKind::StringKw
+                | TokenKind::Str
+                | TokenKind::Bytes
+                | TokenKind::Parameter
+                | TokenKind::Param
+                | TokenKind::Test
+                | TokenKind::Require
+                | TokenKind::Requires
+                | TokenKind::Check
+                | TokenKind::Report
+                | TokenKind::Ensure
+        )
+    })
+    .map_with_span(|t: Token, span: Range<usize>| Identifier {
         name: t.text.clone(),
         span: to_span(span),
     })
@@ -245,110 +265,108 @@ pub fn literal() -> impl Parser<Token, Literal, Error = Simple<Token>> + Clone {
 }
 
 /// Parse a primary expression (atom).
-fn atom() -> impl Parser<Token, Expression, Error = Simple<Token>> + Clone {
-    recursive(|expr| {
-        choice((
-            // Grouped expression
-            expr.delimited_by(tok(TokenKind::OpenParen), tok(TokenKind::CloseParen))
-                .map(|e| Expression::Group(Box::new(e))),
-            // Physical literal (must come before field_reference to handle numbers)
-            physical_literal().map(|p| Expression::Literal(Literal::Physical(p))),
-            // Field reference
-            field_reference().map(Expression::FieldRef),
-            // String literal
-            string_literal().map(|s| Expression::Literal(Literal::String(s))),
-            // Boolean literal
-            bool_literal().map(|b| Expression::Literal(Literal::Bool(b))),
-        ))
-    })
-}
-
-/// Parse a power expression (** is right-associative).
-fn power() -> impl Parser<Token, Expression, Error = Simple<Token>> + Clone {
-    recursive(|power| {
-        atom()
-            .then(tok(TokenKind::Power).ignore_then(power).or_not())
-            .map_with_span(|(base, exp), span: Range<usize>| match exp {
-                Some(e) => Expression::Binary(Box::new(BinaryExpr {
-                    left: base,
-                    operator: BinaryOp::Power,
-                    right: e,
-                    span: to_span(span),
-                })),
-                None => base,
-            })
-    })
-}
-
-/// Parse term (* and /).
-fn term() -> impl Parser<Token, Expression, Error = Simple<Token>> + Clone {
-    power()
-        .then(
-            choice((
-                tok(TokenKind::Star).to(BinaryOp::Mul),
-                tok(TokenKind::Div).to(BinaryOp::Div),
-            ))
-            .then(power())
-            .repeated(),
-        )
-        .foldl(|left, (op, right)| {
-            let span = left.span().merge(&right.span());
-            Expression::Binary(Box::new(BinaryExpr {
-                left,
-                operator: op,
-                right,
-                span,
-            }))
-        })
-}
-
-/// Parse sum (+ and -).
-fn sum() -> impl Parser<Token, Expression, Error = Simple<Token>> + Clone {
-    term()
-        .then(
-            choice((
-                tok(TokenKind::Plus).to(BinaryOp::Add),
-                tok(TokenKind::Minus).to(BinaryOp::Sub),
-            ))
-            .then(term())
-            .repeated(),
-        )
-        .foldl(|left, (op, right)| {
-            let span = left.span().merge(&right.span());
-            Expression::Binary(Box::new(BinaryExpr {
-                left,
-                operator: op,
-                right,
-                span,
-            }))
-        })
-}
-
-/// Parse bitwise operations (| and &, lowest precedence).
-fn bitwise() -> impl Parser<Token, Expression, Error = Simple<Token>> + Clone {
-    sum()
-        .then(
-            choice((
-                tok(TokenKind::OrOp).to(BinaryOp::BitOr),
-                tok(TokenKind::AndOp).to(BinaryOp::BitAnd),
-            ))
-            .then(sum())
-            .repeated(),
-        )
-        .foldl(|left, (op, right)| {
-            let span = left.span().merge(&right.span());
-            Expression::Binary(Box::new(BinaryExpr {
-                left,
-                operator: op,
-                right,
-                span,
-            }))
-        })
+/// Note: The grouped expression case needs to accept any arithmetic expression,
+/// not just atoms. We achieve this by making arithmetic_expression recursive.
+fn atom(
+    full_expr: impl Parser<Token, Expression, Error = Simple<Token>> + Clone,
+) -> impl Parser<Token, Expression, Error = Simple<Token>> + Clone {
+    choice((
+        // Grouped expression - accepts full arithmetic expressions
+        full_expr
+            .delimited_by(tok(TokenKind::OpenParen), tok(TokenKind::CloseParen))
+            .map(|e| Expression::Group(Box::new(e))),
+        // Physical literal (must come before field_reference to handle numbers)
+        physical_literal().map(|p| Expression::Literal(Literal::Physical(p))),
+        // Field reference
+        field_reference().map(Expression::FieldRef),
+        // String literal
+        string_literal().map(|s| Expression::Literal(Literal::String(s))),
+        // Boolean literal
+        bool_literal().map(|b| Expression::Literal(Literal::Bool(b))),
+    ))
 }
 
 /// Parse an arithmetic expression with proper precedence.
+/// This is the main entry point for expression parsing with full recursion support.
 pub fn arithmetic_expression() -> impl Parser<Token, Expression, Error = Simple<Token>> + Clone {
-    bitwise()
+    recursive(|full_expr| {
+        // Power expression (** is right-associative)
+        let power = recursive(|power| {
+            atom(full_expr.clone())
+                .then(tok(TokenKind::Power).ignore_then(power).or_not())
+                .map_with_span(|(base, exp), span: Range<usize>| match exp {
+                    Some(e) => Expression::Binary(Box::new(BinaryExpr {
+                        left: base,
+                        operator: BinaryOp::Power,
+                        right: e,
+                        span: to_span(span),
+                    })),
+                    None => base,
+                })
+        });
+
+        // Term (* and /)
+        let term = power
+            .clone()
+            .then(
+                choice((
+                    tok(TokenKind::Star).to(BinaryOp::Mul),
+                    tok(TokenKind::Div).to(BinaryOp::Div),
+                ))
+                .then(power)
+                .repeated(),
+            )
+            .foldl(|left, (op, right)| {
+                let span = left.span().merge(&right.span());
+                Expression::Binary(Box::new(BinaryExpr {
+                    left,
+                    operator: op,
+                    right,
+                    span,
+                }))
+            });
+
+        // Sum (+ and -)
+        let sum = term
+            .clone()
+            .then(
+                choice((
+                    tok(TokenKind::Plus).to(BinaryOp::Add),
+                    tok(TokenKind::Minus).to(BinaryOp::Sub),
+                ))
+                .then(term)
+                .repeated(),
+            )
+            .foldl(|left, (op, right)| {
+                let span = left.span().merge(&right.span());
+                Expression::Binary(Box::new(BinaryExpr {
+                    left,
+                    operator: op,
+                    right,
+                    span,
+                }))
+            });
+
+        // Bitwise operations (| and &, lowest precedence)
+        sum.clone()
+            .then(
+                choice((
+                    tok(TokenKind::OrOp).to(BinaryOp::BitOr),
+                    tok(TokenKind::AndOp).to(BinaryOp::BitAnd),
+                ))
+                .then(sum)
+                .repeated(),
+            )
+            .foldl(|left, (op, right)| {
+                let span = left.span().merge(&right.span());
+                Expression::Binary(Box::new(BinaryExpr {
+                    left,
+                    operator: op,
+                    right,
+                    span,
+                }))
+            })
+    })
 }
 
 /// Parse a comparison operator.

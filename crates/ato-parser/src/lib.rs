@@ -1,6 +1,7 @@
 //! Parser for the Ato hardware description language.
 //!
-//! This crate provides a complete parser for the Ato DSL, producing a typed AST.
+//! This crate provides a complete parser for the Ato DSL, producing a typed AST
+//! with error recovery using the chumsky parser combinator library.
 //!
 //! # Example
 //!
@@ -18,49 +19,95 @@
 //!     Ok(file) => {
 //!         println!("Parsed {} statements", file.statements.len());
 //!     }
-//!     Err(e) => {
-//!         eprintln!("Parse error: {}", e);
+//!     Err(errors) => {
+//!         for e in errors {
+//!             eprintln!("Parse error: {}", e);
+//!         }
 //!     }
 //! }
 //! ```
 //!
-//! # Chumsky Parser (feature: `chumsky`)
+//! # Error Recovery
 //!
-//! An alternative parser implementation using chumsky with error recovery:
+//! The parser supports error recovery, allowing it to continue parsing after
+//! encountering errors. Use `parse_with_recovery` to get both the AST and errors:
 //!
-//! ```ignore
-//! use ato_parser::chumsky;
+//! ```
+//! use ato_parser::parse_with_recovery;
 //!
-//! let (ast, errors) = chumsky::parse(source);
+//! let source = "module M:\n    pass\n";
+//! let (ast, errors) = parse_with_recovery(source);
+//!
 //! if let Some(file) = ast {
-//!     // AST available even with errors (error recovery)
+//!     println!("Parsed {} statements", file.statements.len());
+//! }
+//! for error in &errors {
+//!     eprintln!("Error: {}", error);
 //! }
 //! ```
 
 pub mod ast;
 pub mod error;
-mod parse;
-
-/// Chumsky-based parser with error recovery (requires `chumsky` feature).
-#[cfg(feature = "chumsky")]
-pub mod chumsky;
+mod chumsky;
 
 pub use ast::*;
 pub use error::{ParseError, ParseResult};
-pub use parse::Parser;
+pub use chumsky::{format_errors, ParseError as ChumskyParseError};
 
 /// Parse Ato source code into an AST.
 ///
 /// This is the main entry point for parsing Ato source code.
-pub fn parse(source: &str) -> ParseResult<File> {
-    let mut parser = Parser::new(source);
-    parser.parse_file()
+/// Returns an error if parsing fails completely.
+///
+/// For error recovery (getting partial AST even with errors), use `parse_with_recovery`.
+pub fn parse(source: &str) -> Result<File, Vec<ChumskyParseError>> {
+    let (ast, errors) = chumsky::parse(source);
+
+    if let Some(file) = ast {
+        if errors.is_empty() {
+            Ok(file)
+        } else {
+            // We got an AST but also had errors - return the errors
+            // (the AST might be incomplete or have placeholder values)
+            Err(errors)
+        }
+    } else {
+        // No AST at all - definitely an error
+        if errors.is_empty() {
+            Err(vec![ChumskyParseError {
+                span: ato_lexer::Span::new(0, 0, 1, 1),
+                message: "failed to parse".to_string(),
+                expected: vec![],
+                found: None,
+                help: None,
+            }])
+        } else {
+            Err(errors)
+        }
+    }
+}
+
+/// Parse Ato source code with error recovery.
+///
+/// Returns both the AST (if any could be parsed) and all errors encountered.
+/// This is useful when you want to continue processing even with errors,
+/// or when you want to collect all errors for display.
+pub fn parse_with_recovery(source: &str) -> (Option<File>, Vec<ChumskyParseError>) {
+    chumsky::parse(source)
+}
+
+/// Parse Ato source code and format any errors using ariadne.
+///
+/// Returns the AST if parsing succeeded (possibly with recovered errors),
+/// and a formatted error string if there were any errors.
+pub fn parse_with_formatted_errors(source: &str, filename: &str) -> (Option<File>, Option<String>) {
+    chumsky::parse_with_errors(source, filename)
 }
 
 /// Parse Ato source code, returning both the AST and a source code wrapper for error display.
 ///
 /// This is useful when you want to display nice error messages with miette.
-pub fn parse_with_source(source: &str) -> (ParseResult<File>, miette::NamedSource<String>) {
+pub fn parse_with_source(source: &str) -> (Result<File, Vec<ChumskyParseError>>, miette::NamedSource<String>) {
     let named_source = miette::NamedSource::new("<input>", source.to_string());
     let result = parse(source);
     (result, named_source)
@@ -552,5 +599,17 @@ mod tests {
         } else {
             panic!("Expected block");
         }
+    }
+
+    #[test]
+    fn test_error_recovery() {
+        // This has an error (missing colon after module name)
+        let source = "module Bad\n    pass\n";
+        let (ast, errors) = parse_with_recovery(source);
+
+        // Should have errors
+        assert!(!errors.is_empty(), "Should have parse errors");
+        // With error recovery, we may or may not get an AST
+        let _ = ast;
     }
 }
