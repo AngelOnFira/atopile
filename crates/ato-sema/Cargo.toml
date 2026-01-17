@@ -10,6 +10,8 @@ description = "Semantic analysis for the Ato hardware description language"
 ato-lexer = { workspace = true }
 ato-parser = { workspace = true }
 ato-ir = { workspace = true }
+ato-solver = { path = "../ato-solver" }
+ato-domain = { path = "../ato-domain" }
 thiserror = { workspace = true }
 miette = { workspace = true }
 serde = { workspace = true }

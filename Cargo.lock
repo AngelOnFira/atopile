@@ -171,9 +171,11 @@ dependencies = [
 name = "ato-sema"
 version = "0.1.0"
 dependencies = [
+ "ato-domain",
  "ato-ir",
  "ato-lexer",
  "ato-parser",
+ "ato-solver",
  "miette",
  "serde",
  "thiserror",

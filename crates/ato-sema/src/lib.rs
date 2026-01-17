@@ -38,10 +38,12 @@ mod lower;
 mod scope;
 mod analyzer;
 pub mod resolution;
+pub mod constraint_collector;
 
 pub use error::{SemaError, SemaResult};
 pub use analyzer::Analyzer;
 pub use scope::Scope;
+pub use constraint_collector::{ConstraintCollector, CollectionError, CollectedParameter, ParameterDependencies};
 
 // Re-export IR types for convenience
 pub use ato_ir::Design;

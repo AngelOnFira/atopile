@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::error::{CliError, CliResult, SemanticErrorInfo, read_file};
-use ato_sema::{Analyzer, SemaError};
+use ato_sema::{Analyzer, ConstraintCollector, SemaError};
 
 /// Find the stdlib path by looking for src/faebryk/library relative to the project.
 fn find_stdlib_path(file_path: &Path) -> Option<PathBuf> {
@@ -91,10 +91,56 @@ pub fn run(path: &Path, output: Option<&Path>, verbose: bool) -> CliResult<()> {
     let constraint_count = design.constraint_count();
     if constraint_count > 0 {
         if verbose {
-            println!("    Solving {} constraint(s)...", constraint_count);
+            println!("    Collecting {} constraint(s)...", constraint_count);
         }
-        // For now, we just validate that constraints exist
-        // Full constraint solving integration will be added in a future iteration
+
+        // Collect constraints from the IR
+        let collector = ConstraintCollector::new();
+        match collector.collect(&design) {
+            Ok((mut solver, dependencies)) => {
+                if verbose {
+                    println!("    Collected {} parameter(s)", solver.predicate_count());
+                    let free_count = dependencies.free_parameters().len();
+                    let constrained_count = dependencies.constrained_parameters().len();
+                    if free_count > 0 || constrained_count > 0 {
+                        println!("    {} free, {} constrained parameter(s)", free_count, constrained_count);
+                    }
+                }
+
+                // Run the solver
+                if verbose {
+                    println!("    Running solver...");
+                }
+
+                match solver.solve() {
+                    Ok(result) => {
+                        if verbose {
+                            println!("    Solver completed in {} iteration(s)", result.iterations);
+                            if result.all_satisfied {
+                                println!("    All constraints satisfied");
+                            } else {
+                                println!("    {} constraint(s) not deduced", result.not_deduced.len());
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        if verbose {
+                            println!("    Solver error: {}", e);
+                        }
+                        // For now, just warn about solver errors instead of failing
+                        // This allows the build to continue even if constraints can't be solved
+                    }
+                }
+            }
+            Err(e) => {
+                if verbose {
+                    println!("    Constraint collection error: {}", e);
+                }
+                // For now, just warn about collection errors
+            }
+        }
+    } else if verbose {
+        println!("    No constraints to solve");
     }
 
     // Phase 3: Output generation (future)
