@@ -17,6 +17,7 @@ serde_json = "1"
 chumsky = "0.9"
 ariadne = "0.4"
 num-traits = "0.2"
+clap = { version = "4", features = ["derive"] }
 
 # Internal crates
 ato-lexer = { path = "crates/ato-lexer" }
@@ -25,3 +26,4 @@ ato-domain = { path = "crates/ato-domain" }
 ato-solver = { path = "crates/ato-solver" }
 ato-ir = { path = "crates/ato-ir" }
 ato-sema = { path = "crates/ato-sema" }
+ato-cli = { path = "crates/ato-cli" }
