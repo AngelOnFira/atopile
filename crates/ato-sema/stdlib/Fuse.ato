@@ -1,9 +1,9 @@
-# Capacitor module - two-terminal capacitor
-# Standard library module for capacitor components
+# Fuse module - overcurrent protection
+# Standard library module for fuses and PTCs
 
 import Electrical
 
-module Capacitor:
+module Fuse:
     # Primary terminals (array form for bridging)
     unnamed = new Electrical[2]
     # Alternative pin names for compatibility
@@ -11,13 +11,14 @@ module Capacitor:
     p2 = new Electrical
 
     # Electrical parameters
-    capacitance: F
+    trip_current: A
+    hold_current: A
     max_voltage: V
-    esr: ohm
+    resistance: ohm
 
     # Physical parameters
     package: dimensionless
 
     # Traits
     trait can_bridge
-    trait has_designator_prefix::prefix<value="C">
+    trait has_designator_prefix::prefix<value="F">

@@ -1,0 +1,23 @@
+# Crystal module - quartz crystal oscillator
+# Standard library module for crystal oscillators
+
+import Electrical
+
+module Crystal:
+    # Terminals
+    unnamed = new Electrical[2]
+    p1 = new Electrical
+    p2 = new Electrical
+
+    # Electrical parameters
+    frequency: Hz
+    load_capacitance: F
+    esr: ohm
+    drive_level: W
+
+    # Physical parameters
+    package: dimensionless
+
+    # Traits
+    trait can_bridge
+    trait has_designator_prefix::prefix<value="Y">

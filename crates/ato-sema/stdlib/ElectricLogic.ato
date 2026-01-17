@@ -1,8 +1,10 @@
 # ElectricLogic interface - digital logic signal
-# This is a stub for the Rust compiler
+# Standard library interface for digital logic signals
 
 import Electrical, ElectricPower
 
 interface ElectricLogic:
+    # Signal line
     line = new Electrical
+    # Power reference for logic levels
     reference = new ElectricPower

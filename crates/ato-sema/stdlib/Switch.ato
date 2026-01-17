@@ -1,23 +1,18 @@
-# Capacitor module - two-terminal capacitor
-# Standard library module for capacitor components
+# Switch module - generic electrical switch
+# Standard library module for switches
 
 import Electrical
 
-module Capacitor:
+module Switch:
     # Primary terminals (array form for bridging)
     unnamed = new Electrical[2]
     # Alternative pin names for compatibility
     p1 = new Electrical
     p2 = new Electrical
 
-    # Electrical parameters
-    capacitance: F
-    max_voltage: V
-    esr: ohm
-
     # Physical parameters
     package: dimensionless
 
     # Traits
     trait can_bridge
-    trait has_designator_prefix::prefix<value="C">
+    trait has_designator_prefix::prefix<value="S">

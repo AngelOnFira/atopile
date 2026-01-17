@@ -1,0 +1,27 @@
+# LDO module - low dropout regulator
+# Standard library module for LDO voltage regulators
+
+import Electrical, ElectricPower
+
+module LDO:
+    # Power interfaces
+    power_in = new ElectricPower
+    power_out = new ElectricPower
+
+    # Control pins
+    enable = new Electrical
+
+    # Electrical parameters
+    output_voltage: V
+    max_input_voltage: V
+    dropout_voltage: V
+    output_current: A
+    quiescent_current: A
+    ripple_rejection_ratio: dB
+
+    # Physical parameters
+    package: dimensionless
+
+    # Traits
+    trait can_bridge
+    trait has_designator_prefix::prefix<value="U">

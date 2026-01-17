@@ -1,8 +1,10 @@
 # ElectricSignal interface - electrical signal with reference
-# This is a stub for the Rust compiler
+# Standard library interface for analog and generic signals
 
 import Electrical, ElectricPower
 
 interface ElectricSignal:
+    # Signal line
     line = new Electrical
+    # Power reference for the signal
     reference = new ElectricPower

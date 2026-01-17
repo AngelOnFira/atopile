@@ -1,0 +1,26 @@
+# OpAmp module - operational amplifier
+# Standard library module for operational amplifiers
+
+import Electrical, ElectricPower
+
+module OpAmp:
+    # Terminals
+    inverting_input = new Electrical
+    non_inverting_input = new Electrical
+    output = new Electrical
+    power = new ElectricPower
+
+    # Electrical parameters
+    bandwidth: Hz
+    gain_bandwidth_product: Hz
+    common_mode_rejection_ratio: dB
+    input_bias_current: A
+    input_offset_voltage: V
+    output_current: A
+    slew_rate: V
+
+    # Physical parameters
+    package: dimensionless
+
+    # Traits
+    trait has_designator_prefix::prefix<value="U">

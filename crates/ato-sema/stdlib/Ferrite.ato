@@ -1,9 +1,9 @@
-# Capacitor module - two-terminal capacitor
-# Standard library module for capacitor components
+# Ferrite module - ferrite bead for EMI suppression
+# Standard library module for ferrite beads
 
 import Electrical
 
-module Capacitor:
+module Ferrite:
     # Primary terminals (array form for bridging)
     unnamed = new Electrical[2]
     # Alternative pin names for compatibility
@@ -11,13 +11,13 @@ module Capacitor:
     p2 = new Electrical
 
     # Electrical parameters
-    capacitance: F
-    max_voltage: V
-    esr: ohm
+    impedance_at_100mhz: ohm
+    max_current: A
+    dc_resistance: ohm
 
     # Physical parameters
     package: dimensionless
 
     # Traits
     trait can_bridge
-    trait has_designator_prefix::prefix<value="C">
+    trait has_designator_prefix::prefix<value="FB">

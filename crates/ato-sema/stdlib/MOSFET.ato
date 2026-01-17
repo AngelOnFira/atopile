@@ -1,0 +1,25 @@
+# MOSFET module - metal-oxide-semiconductor field-effect transistor
+# Standard library module for MOSFET transistors
+
+import Electrical
+
+module MOSFET:
+    # Terminals
+    source = new Electrical
+    gate = new Electrical
+    drain = new Electrical
+
+    # Electrical parameters
+    gate_source_threshold_voltage: V
+    max_drain_source_voltage: V
+    max_continuous_drain_current: A
+    on_resistance: ohm
+    max_gate_source_voltage: V
+    power_dissipation: W
+
+    # Physical parameters
+    package: dimensionless
+
+    # Traits
+    trait can_bridge
+    trait has_designator_prefix::prefix<value="Q">

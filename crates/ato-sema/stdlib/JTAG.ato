@@ -1,0 +1,12 @@
+# JTAG interface - joint test action group
+# Standard library interface for JTAG debugging
+
+import ElectricLogic
+
+interface JTAG:
+    # JTAG signals
+    tck = new ElectricLogic
+    tms = new ElectricLogic
+    tdi = new ElectricLogic
+    tdo = new ElectricLogic
+    trst = new ElectricLogic

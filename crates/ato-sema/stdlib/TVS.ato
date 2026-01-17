@@ -1,18 +1,19 @@
-# Diode module - two-terminal diode
-# Standard library module for general purpose diodes
+# TVS module - transient voltage suppressor
+# Standard library module for ESD/surge protection
 
 import Electrical
 
-module Diode:
+module TVS:
     # Terminals
     anode = new Electrical
     cathode = new Electrical
 
     # Electrical parameters
-    forward_voltage: V
-    current: A
-    max_current: A
+    reverse_breakdown_voltage: V
     reverse_working_voltage: V
+    max_current: A
+    clamping_voltage: V
+    forward_voltage: V
     reverse_leakage_current: A
 
     # Physical parameters

@@ -1,9 +1,13 @@
 # ElectricPower interface - power rail with high and low voltage
-# This is a stub for the Rust compiler
+# Standard library interface for power rails
 
 import Electrical
 
 interface ElectricPower:
+    # Power rail terminals
     hv = new Electrical
     lv = new Electrical
+
+    # Electrical parameters
     voltage: V
+    max_current: A

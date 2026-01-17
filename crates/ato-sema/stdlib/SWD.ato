@@ -1,0 +1,9 @@
+# SWD interface - serial wire debug
+# Standard library interface for ARM SWD debugging
+
+import ElectricLogic
+
+interface SWD:
+    # SWD signals
+    swclk = new ElectricLogic
+    swdio = new ElectricLogic

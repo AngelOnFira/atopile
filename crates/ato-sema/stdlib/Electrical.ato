@@ -1,5 +1,5 @@
 # Electrical interface - basic electrical connection point
-# This is a stub for the Rust compiler
+# Standard library interface for electrical connections
 
 interface Electrical:
     pass

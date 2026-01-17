@@ -1,15 +1,26 @@
 # LED module - light emitting diode
-# This is a stub for the Rust compiler
+# Standard library module for LEDs
 
 import Electrical
 
 module LED:
+    # Terminals (same as diode)
     anode = new Electrical
     cathode = new Electrical
+
+    # Electrical parameters
     forward_voltage: V
     current: A
+    max_current: A
+
+    # Optical parameters
     brightness: cd
     max_brightness: cd
+    wavelength: nm
 
+    # Physical parameters
+    package: dimensionless
+
+    # Traits
     trait can_bridge
     trait has_designator_prefix::prefix<value="D">

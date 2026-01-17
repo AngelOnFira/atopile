@@ -1,0 +1,25 @@
+# Relay module - electromechanical relay
+# Standard library module for relays
+
+import Electrical
+
+module Relay:
+    # Coil terminals
+    coil = new Electrical[2]
+
+    # Contact terminals (SPDT)
+    common = new Electrical
+    normally_open = new Electrical
+    normally_closed = new Electrical
+
+    # Electrical parameters
+    coil_voltage: V
+    coil_current: A
+    max_contact_current: A
+    max_contact_voltage: V
+
+    # Physical parameters
+    package: dimensionless
+
+    # Traits
+    trait has_designator_prefix::prefix<value="K">

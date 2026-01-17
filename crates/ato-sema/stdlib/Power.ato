@@ -1,5 +1,5 @@
 # Power interface - base power interface
-# This is a stub for the Rust compiler
+# Standard library interface for generic power
 
 interface Power:
     pass

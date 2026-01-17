@@ -1,0 +1,10 @@
+# USB interface - universal serial bus
+# Standard library interface for USB 2.0 communication
+
+import DifferentialPair, ElectricPower
+
+interface USB:
+    # Data differential pair (D+/D-)
+    d = new DifferentialPair
+    # Bus power
+    buspower = new ElectricPower

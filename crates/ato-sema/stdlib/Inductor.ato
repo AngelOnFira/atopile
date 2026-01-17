@@ -1,12 +1,25 @@
 # Inductor module - two-terminal inductor
-# This is a stub for the Rust compiler
+# Standard library module for inductor components
 
 import Electrical
 
 module Inductor:
+    # Primary terminals (array form for bridging)
     unnamed = new Electrical[2]
+    # Alternative pin names for compatibility
+    p1 = new Electrical
+    p2 = new Electrical
+
+    # Electrical parameters
     inductance: H
     max_current: A
+    dc_resistance: ohm
+    saturation_current: A
+    self_resonant_frequency: Hz
 
+    # Physical parameters
+    package: dimensionless
+
+    # Traits
     trait can_bridge
     trait has_designator_prefix::prefix<value="L">

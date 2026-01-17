@@ -1,9 +1,12 @@
 # UART interface - universal asynchronous receiver-transmitter
-# This is a stub for the Rust compiler
+# Standard library interface for UART communication
 
 import ElectricLogic
 
 interface UART:
+    # Transmit and receive lines
     tx = new ElectricLogic
     rx = new ElectricLogic
+
+    # Protocol parameters
     baud: baud

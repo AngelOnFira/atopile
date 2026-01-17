@@ -1,0 +1,14 @@
+# Connector module - generic connector
+# Standard library module for connectors
+
+import Electrical
+
+module Connector:
+    # Pins (array form, size determined by instance)
+    pins = new Electrical[2]
+
+    # Physical parameters
+    package: dimensionless
+
+    # Traits
+    trait has_designator_prefix::prefix<value="J">

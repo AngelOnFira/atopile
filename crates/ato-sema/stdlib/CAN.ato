@@ -1,0 +1,11 @@
+# CAN interface - controller area network
+# Standard library interface for CAN bus communication
+
+import DifferentialPair
+
+interface CAN:
+    # Differential pair for CAN_H and CAN_L
+    diff_pair = new DifferentialPair
+
+    # Protocol parameters
+    speed: bps

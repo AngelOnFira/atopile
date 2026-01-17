@@ -1,5 +1,5 @@
 # Signal interface - base signal interface
-# This is a stub for the Rust compiler
+# Standard library interface for generic signals
 
 interface Signal:
     pass

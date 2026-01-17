@@ -1,0 +1,14 @@
+# I2S interface - inter-IC sound
+# Standard library interface for digital audio communication
+
+import ElectricLogic
+
+interface I2S:
+    # Clock and data lines
+    sd = new ElectricLogic
+    ws = new ElectricLogic
+    sck = new ElectricLogic
+
+    # Protocol parameters
+    sample_rate: Hz
+    bit_depth: dimensionless

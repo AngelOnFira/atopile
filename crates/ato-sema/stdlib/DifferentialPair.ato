@@ -1,0 +1,12 @@
+# DifferentialPair interface - differential signal pair
+# Standard library interface for differential signaling (USB, Ethernet, etc.)
+
+import ElectricSignal
+
+interface DifferentialPair:
+    # Positive and negative differential signals
+    p = new ElectricSignal
+    n = new ElectricSignal
+
+    # Electrical parameters
+    impedance: ohm

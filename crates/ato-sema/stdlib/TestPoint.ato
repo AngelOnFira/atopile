@@ -1,0 +1,14 @@
+# TestPoint module - test point pad
+# Standard library module for test points
+
+import Electrical
+
+module TestPoint:
+    # Single terminal
+    p = new Electrical
+
+    # Physical parameters
+    package: dimensionless
+
+    # Traits
+    trait has_designator_prefix::prefix<value="TP">

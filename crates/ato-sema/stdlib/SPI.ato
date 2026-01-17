@@ -1,11 +1,14 @@
 # SPI interface - serial peripheral interface
-# This is a stub for the Rust compiler
+# Standard library interface for SPI communication
 
 import ElectricLogic
 
 interface SPI:
+    # Clock and data lines
     sclk = new ElectricLogic
     mosi = new ElectricLogic
     miso = new ElectricLogic
     cs = new ElectricLogic
+
+    # Protocol parameters
     frequency: Hz

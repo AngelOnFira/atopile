@@ -1,0 +1,23 @@
+# BJT module - bipolar junction transistor
+# Standard library module for BJT transistors
+
+import Electrical
+
+module BJT:
+    # Terminals
+    emitter = new Electrical
+    base = new Electrical
+    collector = new Electrical
+
+    # Electrical parameters
+    collector_current: A
+    collector_emitter_voltage: V
+    current_gain: dimensionless
+    power_dissipation: W
+
+    # Physical parameters
+    package: dimensionless
+
+    # Traits
+    trait can_bridge
+    trait has_designator_prefix::prefix<value="Q">

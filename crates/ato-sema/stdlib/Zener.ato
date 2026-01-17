@@ -1,18 +1,19 @@
-# Diode module - two-terminal diode
-# Standard library module for general purpose diodes
+# Zener module - zener diode
+# Standard library module for zener diodes (voltage references)
 
 import Electrical
 
-module Diode:
+module Zener:
     # Terminals
     anode = new Electrical
     cathode = new Electrical
 
     # Electrical parameters
+    zener_voltage: V
+    max_power: W
     forward_voltage: V
     current: A
     max_current: A
-    reverse_working_voltage: V
     reverse_leakage_current: A
 
     # Physical parameters
