@@ -65,6 +65,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ato-ir"
+version = "0.1.0"
+dependencies = [
+ "ato-domain",
+ "ato-lexer",
+ "ato-parser",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "ato-lexer"
 version = "0.1.0"
 dependencies = [
