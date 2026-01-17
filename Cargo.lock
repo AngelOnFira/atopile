@@ -100,6 +100,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ato-sema"
+version = "0.1.0"
+dependencies = [
+ "ato-ir",
+ "ato-lexer",
+ "ato-parser",
+ "miette",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "ato-solver"
 version = "0.1.0"
 dependencies = [

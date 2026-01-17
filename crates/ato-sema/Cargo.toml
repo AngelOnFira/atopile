@@ -1,0 +1,17 @@
+[package]
+name = "ato-sema"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Semantic analysis for the Ato hardware description language"
+
+[dependencies]
+ato-lexer = { workspace = true }
+ato-parser = { workspace = true }
+ato-ir = { workspace = true }
+thiserror = { workspace = true }
+miette = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
