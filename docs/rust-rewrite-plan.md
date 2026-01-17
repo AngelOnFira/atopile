@@ -1,848 +1,204 @@
 # Atopile Rust Rewrite Plan
 
-This document outlines the strategy for a **full rewrite** of atopile in Rust. The goal is a standalone Rust compiler that can build `.ato` projects **without any Python dependencies**.
-
-This is NOT an incremental migration - we are building a completely new Rust toolchain that will eventually replace the Python implementation entirely.
+Full rewrite of atopile in Rust - standalone compiler with **no Python dependencies**.
 
 ## Current Progress
 
 | Crate | Status | Description |
 |-------|--------|-------------|
 | `ato-lexer` | ✅ Complete | Tokenization with INDENT/DEDENT |
-| `ato-parser` | ✅ Complete | AST generation with chumsky (error recovery) |
+| `ato-parser` | ✅ Complete | AST generation (chumsky, error recovery) |
 | `ato-domain` | ✅ Complete | Quantity/interval/set types |
 | `ato-solver` | ✅ Complete | Constraint solver with simplification |
 | `ato-ir` | ✅ Complete | Intermediate representation |
 | `ato-sema` | ✅ Complete | Semantic analysis |
 | `ato-cli` | ✅ Complete | Main compiler CLI |
-| `ato-tests` | ✅ Complete | E2E test suite (110 tests) |
-| Real-world tests | ✅ Complete | Testing against examples/packages/external repos (227 tests) |
-| Import resolution | 🔲 Not Started | Phase 5: Package/file resolution + symbol merging |
-| Solver integration | 🔲 Not Started | Phase 6: Connect solver to build pipeline |
-| Part selection | 🔲 Future | Phase 7: Query part databases |
-| Output generation | 🔲 Future | Phase 8: KiCad, BOM, netlist |
+| `ato-tests` | ✅ Complete | E2E test suite (227 tests) |
+| `ato-parts` | ✅ Complete | Part database interface |
+| `ato-export` | ✅ Complete | Netlist generation (KiCad format) |
+| Import resolution | 🔲 Not Started | Package/file resolution + symbol merging |
+| Solver integration | 🔲 Not Started | Connect solver to build pipeline |
+| BOM generation | 🔲 Not Started | Bill of materials output |
+| KiCad project | 🔲 Not Started | Full KiCad project output |
 
 ---
 
-## Architecture Overview
+## Feature Parity Status
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                         ato-cli                              │
-│  (main binary - orchestrates compilation, handles I/O)       │
-└─────────────────────────────────────────────────────────────┘
-                              │
-         ┌────────────────────┼────────────────────┐
-         ▼                    ▼                    ▼
-┌─────────────┐      ┌─────────────┐      ┌─────────────┐
-│  ato-lexer  │      │  ato-sema   │      │  ato-solver │
-│  (tokens)   │      │  (analysis) │      │ (constraints)│
-└─────────────┘      └─────────────┘      └─────────────┘
-         │                    │                    │
-         ▼                    ▼                    ▼
-┌─────────────┐      ┌─────────────┐      ┌─────────────┐
-│ ato-parser  │      │   ato-ir    │      │ ato-domain  │
-│   (AST)     │      │   (graph)   │      │  (types)    │
-└─────────────┘      └─────────────┘      └─────────────┘
-```
+**Completed**: Parsing, semantic analysis, constraint types, part queries, netlist export
+**Remaining**: Import resolution, solver pipeline, BOM, full KiCad output
+
+Estimated: ~70% of core functionality complete
 
 ---
 
-## Phase 0: Codebase Cleanup ✅ COMPLETE
+## Completed Phases (Summary)
 
-Before proceeding with new development, clean up dead code from earlier experimentation:
+### Phase 0-4: Core Compiler ✅
+- **Lexer**: logos-based tokenization with Python-style INDENT/DEDENT
+- **Parser**: chumsky with error recovery, full AST
+- **Domain**: Quantities, intervals, tolerances, set operations
+- **Solver**: Constraint expressions, predicates, simplification, contradiction detection
+- **IR**: Module/Field/Connection graph representation
+- **Sema**: Name resolution, type checking, AST→IR lowering
+- **CLI**: `ato build/check/parse` commands with miette error formatting
+- **Tests**: 227 tests covering examples, stdlib, external repos
 
-### Prompt 0: Remove Dead Code
+### Phase 7: Part Selection ✅
+- **ato-parts crate**: Part/PartId/Manufacturer types, PartDatabase trait
+- **Query builders**: ResistorQuery, CapacitorQuery with parameter constraints
+- **Selection**: BasicPartSelector with scoring strategies
 
-```markdown
-# Task: Clean Up Unused Code
-
-Remove code that won't be used in the full rewrite.
-
-## Items to Remove
-
-### 1. Remove ato-py crate
-The Python bindings (`crates/ato-py/`) were created for incremental migration but aren't needed for a full rewrite.
-- Delete `crates/ato-py/` directory entirely
-- Remove from workspace `Cargo.toml` members
-
-### 2. Consolidate parser to chumsky only
-The parser currently has two implementations:
-- `src/parse/` - Hand-written recursive descent parser (default)
-- `src/chumsky/` - Chumsky-based parser with error recovery (feature-gated)
-
-Chumsky provides better error recovery, so make it the default:
-- Move `src/chumsky/` contents to `src/parse/` (replacing old implementation)
-- Remove the `chumsky` feature flag from Cargo.toml
-- Make chumsky + ariadne required dependencies (not optional)
-- Update lib.rs to export chumsky parser as the default
-- Update all tests
-
-## Tests Must Pass
-- `cargo test -p ato-parser`
-- All existing parser tests continue to work
-
-## Completion Criteria
-Output <promise>CLEANUP_COMPLETE</promise> when:
-- ato-py directory deleted
-- Parser consolidated to chumsky only
-- No feature flags for parser selection
-- All tests pass
-```
+### Phase 8: Output Generation (Partial) ✅
+- **ato-export crate**: Netlist/Net/NetNode/NetlistComponent types
+- **NetlistBuilder**: Builds netlist from IR Design
+- **KiCad export**: S-expression netlist format (.net files)
 
 ---
 
-## Phase 1: Language Frontend ✅ COMPLETE
+## Remaining Work
 
-### Prompt 1: Ato Lexer ✅
+### Phase 5: Import Resolution 🔲
 
-```markdown
-# Task: Implement Ato Lexer in Rust
+#### Prompt 13: Package/File Resolution
 
-Create a lexer for the Ato DSL using the `logos` crate.
+Create module resolution system to find and load .ato files.
 
-## Requirements
-1. Tokenize all tokens from the grammar (see src/atopile/parser/AtoLexer.g4)
-2. Handle Python-style INDENT/DEDENT with indentation tracking
-3. Track source locations (line, column, byte offset)
-4. Support string literals, numbers (int, float, hex, bin, oct)
-5. Handle physical quantities (10kohm, 5V, 100nF)
+**Requirements**:
+1. Resolve `from "path/to/file.ato" import Module` (relative/absolute paths)
+2. Resolve `import Resistor` from standard library
+3. Look up packages in `ato.yaml` dependencies
+4. Build module registry, detect circular imports
 
-## Tests Must Pass
-- `cargo test -p ato-lexer`
+**Reference**: `src/atopile/config.py` - Python package resolution
 
-## Completion: LEXER_COMPLETE ✅
-```
-
-### Prompt 2: Ato Parser ✅
-
-```markdown
-# Task: Implement Ato Parser in Rust
-
-Create a parser that produces a typed AST.
-
-## Requirements
-1. Parse according to src/atopile/parser/AtoParser.g4
-2. Use ato-lexer as input
-3. Produce strongly-typed AST with serde serialization
-4. Generate good error messages with source spans
-
-## Tests Must Pass
-- `cargo test -p ato-parser`
-
-## Completion: PARSER_COMPLETE ✅
-```
+**Completion**: `<promise>FILE_RESOLUTION_COMPLETE</promise>`
 
 ---
 
-## Phase 2: Constraint System ✅ COMPLETE
+#### Prompt 14: Symbol Merging
 
-### Prompt 3: Domain Types ✅
+Merge imported symbols into importing scope.
 
-```markdown
-# Task: Implement Constraint Domain Types
+**Requirements**:
+1. Track which symbols each file exports
+2. `import Resistor` adds `Resistor` to current scope
+3. Update name resolver to check imported symbols
+4. `module Derived from ImportedBase:` inherits fields across files
 
-## Requirements
-1. `Quantity` type with unit tracking
-2. `Interval` for continuous ranges
-3. `DisjointIntervals` for unions
-4. `BilateralTolerance` (e.g., 10kohm +/- 5%)
-5. Set operations: union, intersection, contains, is_subset
-
-## Tests Must Pass
-- `cargo test -p ato-domain`
-
-## Completion: DOMAIN_COMPLETE ✅
-```
-
-### Prompt 4: Constraint Solver ✅
-
-```markdown
-# Task: Implement Constraint Solver
-
-## Requirements
-1. Expression types: Parameter, Literal, arithmetic ops
-2. Predicate types: Is, LessOrEqual, GreaterOrEqual, IsSubset, Within
-3. Simplification pipeline with fixed-point iteration
-4. Contradiction detection
-
-## Tests Must Pass
-- `cargo test -p ato-solver`
-
-## Completion: SOLVER_COMPLETE ✅
-```
+**Completion**: `<promise>SYMBOL_MERGING_COMPLETE</promise>`
 
 ---
 
-## Phase 3: Semantic Analysis ✅ COMPLETE
+### Phase 6: Solver Integration 🔲
 
-### Prompt 5: Intermediate Representation
+#### Prompt 15: Constraint Collection
 
-```markdown
-# Task: Implement Core IR (ato-ir crate)
+Extract constraints from IR and prepare for solver.
 
-Create the intermediate representation that models an Ato design after parsing.
+**Requirements**:
+1. Walk IR Design, collect all constraints
+2. Convert IR expressions to solver expressions
+3. Build parameter dependency graph
+4. Handle unit conversions (mV→V, etc.)
 
-## Requirements
-1. Module/Component/Interface definitions with unique IDs
-2. Field system: parameters, pins, signals, instances
-3. Connection graph (which pins connect to which)
-4. Constraint collection (assertions on parameters)
-5. Import resolution data structures
-
-## Key Types
-- `ModuleId`, `FieldId`, `ConnectionId` - interned identifiers
-- `Module` - contains fields, connections, constraints, nested modules
-- `Field` - parameter, pin, signal, or instance
-- `Connection` - links between connectable fields
-- `Design` - root container with all modules
-
-## Structure
-- `crates/ato-ir/src/lib.rs`
-- `crates/ato-ir/src/module.rs` - Module/Component/Interface
-- `crates/ato-ir/src/field.rs` - Fields and their types
-- `crates/ato-ir/src/connection.rs` - Connection graph
-- `crates/ato-ir/src/design.rs` - Top-level design container
-
-## Tests Must Pass
-- `cargo test -p ato-ir`
-- Can represent the structure of example .ato files
-
-## Completion Criteria
-Output <promise>IR_COMPLETE</promise> when:
-- All core types implemented
-- Can model modules, fields, connections
-- Unit tests pass
-```
-
-### Prompt 6: Semantic Analysis
-
-```markdown
-# Task: Implement Semantic Analysis (ato-sema crate)
-
-Lower parsed AST to IR with full semantic checking.
-
-## Requirements
-1. Import resolution - find and load dependent .ato files
-2. Name resolution - resolve all identifiers to their definitions
-3. Type checking - ensure connections are between compatible interfaces
-4. Inheritance - apply `from` clauses to inherit fields
-5. Template instantiation - expand `new Type<args>`
-6. For-loop expansion - unroll for loops into concrete instances
-7. Error collection - gather all semantic errors with source spans
-
-## Key Passes
-1. `resolve_imports()` - Build module dependency graph, load files
-2. `resolve_names()` - Link identifiers to definitions
-3. `check_types()` - Verify interface compatibility
-4. `lower_to_ir()` - Convert AST → IR with all expansions
-
-## Structure
-- `crates/ato-sema/src/lib.rs`
-- `crates/ato-sema/src/imports.rs` - Import resolution
-- `crates/ato-sema/src/names.rs` - Name resolution
-- `crates/ato-sema/src/types.rs` - Type checking
-- `crates/ato-sema/src/lower.rs` - AST → IR lowering
-
-## Tests Must Pass
-- `cargo test -p ato-sema`
-- Can analyze example .ato files without false errors
-- Catches real errors (undefined names, type mismatches)
-
-## Completion: SEMA_COMPLETE ✅
-```
+**Completion**: `<promise>CONSTRAINT_COLLECTION_COMPLETE</promise>`
 
 ---
 
-## Phase 4: CLI and End-to-End Testing ✅ COMPLETE
+#### Prompt 16: Solver Execution
 
-### Prompt 7: CLI Foundation ✅
+Run solver on collected constraints.
 
-```markdown
-# Task: Implement CLI (ato-cli crate)
+**Requirements**:
+1. Pass constraints to ato-solver, run simplification
+2. Report solved values or contradictions with source locations
+3. Integrate into `ato build` and `ato check` commands
 
-Create the main `ato` binary that orchestrates compilation.
-
-## Requirements
-1. Parse command-line arguments (use `clap`)
-2. Load and parse .ato files
-3. Run semantic analysis
-4. Run constraint solver
-5. Report errors with nice formatting (use `miette`)
-6. Output build artifacts (initially just validation pass/fail)
-
-## Commands
-- `ato build <file.ato>` - Compile a project
-- `ato check <file.ato>` - Check without full build
-- `ato parse <file.ato>` - Parse and dump AST (for debugging)
-
-## Structure
-- `crates/ato-cli/src/main.rs` - Entry point
-- `crates/ato-cli/src/commands/build.rs`
-- `crates/ato-cli/src/commands/check.rs`
-- `crates/ato-cli/src/commands/parse.rs`
-- `crates/ato-cli/src/error.rs` - Error formatting
-
-## Tests Must Pass
-- `cargo test -p ato-cli`
-- `cargo run -p ato-cli -- check examples/*/elec/src/*.ato` passes
-- Integration tests with known-good and known-bad .ato files
-
-## Completion: CLI_COMPLETE ✅
-```
-
-### Prompt 8: End-to-End Test Suite ✅
-
-```markdown
-# Task: Create End-to-End Test Suite
-
-Build a comprehensive test suite that validates the full compiler pipeline.
-
-## Requirements
-1. Golden tests - parse example files, compare output
-2. Error tests - verify specific errors are caught
-3. Solver tests - verify constraint solving on real designs
-4. Regression tests - prevent previously fixed bugs from returning
-
-## Test Categories
-
-### Parse Tests (`tests/parse/`)
-- `valid/*.ato` - Should parse successfully
-- `invalid/*.ato` - Should produce specific parse errors
-
-### Semantic Tests (`tests/sema/`)
-- `valid/*.ato` - Should pass semantic analysis
-- `errors/*.ato` - Should catch specific semantic errors
-
-### Solver Tests (`tests/solver/`)
-- `satisfiable/*.ato` - Constraints should solve
-- `contradictions/*.ato` - Should detect contradictions
-
-### Integration Tests (`tests/integration/`)
-- Full builds of example projects
-- Comparison with Python implementation output
-
-## Structure
-- `crates/ato-tests/` - Test crate with fixtures and tests
-- `crates/ato-tests/src/harness.rs` - Common test utilities
-- Snapshot testing with `insta` crate
-
-## Completion: E2E_TESTS_COMPLETE ✅
-```
+**Completion**: `<promise>SOLVER_INTEGRATION_COMPLETE</promise>`
 
 ---
 
-## Phase 4.5: Real-World Project Testing ✅ COMPLETE
+### Phase 8: Output Generation (Remaining) 🔲
 
-Test the Rust compiler against real atopile projects and packages to ensure compatibility with production code.
+#### Prompt 19: BOM Generation
 
-### Prompt 9: Local Examples Testing
+Produce Bill of Materials for manufacturing.
 
-```markdown
-# Task: Test Against Local Examples
-
-Parse and analyze all example projects in the atopile repository.
-
-## Test Targets (by complexity)
-
-### Simple
-1. `examples/quickstart/quickstart.ato` - Basic resistor, single import
-2. `examples/layout_reuse/layout_reuse.ato` - Sub-module arrays, bridge connections
-
-### Medium
-3. `examples/equations/equations.ato` - Voltage divider, constraint equations
-4. `examples/pick_parts/pick_parts.ato` - Part selection, pragmas, FOR_LOOP
-5. `examples/i2c/i2c.ato` - Multi-module I2C, templating, local imports
-
-### Complex
-6. `examples/esp32_minimal/esp32_minimal.ato` - External package imports, power rails
-7. `examples/led_badge/led_badge.ato` - 100+ lines, multiple subsystems, LED matrix
-
-## Requirements
-
-1. Create test harness that runs `ato parse` on each example
-2. Track which examples parse successfully vs fail
-3. For failures, categorize the error type:
-   - Lexer error (unknown token)
-   - Parser error (syntax)
-   - Unsupported feature (pragma, template, etc.)
-4. Create fixture tests for each example
-5. Document gaps between Rust and Python parser capabilities
-
-## Success Criteria
-- All examples parse without lexer/parser errors
-- Semantic analysis runs (even if imports fail)
-- Clear error messages for unsupported features
-
-## Completion Promise
-Output <promise>LOCAL_EXAMPLES_COMPLETE</promise> when:
-- All 7 examples tested
-- Test results documented
-- Fixture tests created
-```
-
-### Prompt 10: Standard Library Testing
-
-```markdown
-# Task: Test Standard Library Files
-
-Parse all .ato files in the standard library.
-
-## Test Targets
-- `src/faebryk/library/interfaces.ato` - Protocol interfaces (I2S, SPI, CAN, USB_PD, etc.)
-- `src/faebryk/library/resistors.ato` - I2CPullup module
-- `src/faebryk/library/diodes.ato` - PowerDiodeOr, bridge rectifier
-- `src/faebryk/library/mosfets.ato` - HalfBridge, LowSideSwitch
-- `src/faebryk/library/regulators.ato` - Buck, Boost, LDO variants
-- `src/faebryk/library/filters.ato` - LowPassPiFilter
-- `src/faebryk/library/vdivs.ato` - Voltage divider
-- `src/faebryk/library/oscillators.ato` - Crystal oscillator
-- `src/faebryk/library/debug.ato` - TestPoint
-
-## Requirements
-1. Parse each library file
-2. Verify module/interface definitions are extracted
-3. Test that library patterns (interfaces, traits) are handled
-
-## Completion Promise
-Output <promise>STDLIB_TESTS_COMPLETE</promise> when all library files parse successfully.
-```
-
-### Prompt 11: External Repository Testing
-
-```markdown
-# Task: Test Against External Atopile Repos
-
-Clone and test against real-world atopile projects from GitHub.
-
-## Repositories to Test
-
-### Package Repos (simpler, self-contained)
-1. `atopile/generics` - Standard library (resistors, capacitors, LEDs, interfaces)
-2. `atopile/rp2040` - RP2040 microcontroller module
-3. `atopile/esp32-s3` - ESP32-S3 module
-
-### Hardware Project Repos (complex, multiple files)
-4. `atopile/spin-servo-drive` - BLDC servo controller (115 stars)
-5. `atopile/nonos` - Smart speaker with CM5, DSP, amp (51 stars)
-
-### Community Repos
-6. `u-fire/esp32c3-ato` - ESP32-C3-MINI module
-
-## Test Approach
-
-1. Clone each repo to `crates/ato-tests/external/` (gitignored)
-2. Find all .ato files recursively
-3. Run `ato parse` on each file
-4. Collect and categorize results:
-   - ✅ Parses successfully
-   - ⚠️ Parses with warnings
-   - ❌ Parse error (with error type)
-5. Create summary report
-
-## Requirements
-- Script to clone/update repos
-- Test harness for external projects
-- CI-friendly (can skip if repos unavailable)
-- Report showing compatibility percentage
-
-## Completion Promise
-Output <promise>EXTERNAL_REPOS_COMPLETE</promise> when:
-- At least 3 external repos tested
-- Compatibility report generated
-- Major parse failures documented as issues
-```
-
-### Prompt 12: Syntax Coverage Validation
-
-```markdown
-# Task: Validate Full Syntax Coverage
-
-Use the comprehensive syntax example file to verify all language features.
-
-## Test Target
-- `src/vscode-atopile/syntax_examples.ato` - 200 lines covering all syntax features
-
-## Requirements
-1. Parse the full syntax examples file
-2. For each syntax construct, verify:
-   - Lexer produces correct tokens
-   - Parser produces correct AST node
-   - AST can be serialized to JSON
-3. Create a syntax coverage matrix:
-
-| Feature | Lexer | Parser | Sema | Notes |
-|---------|-------|--------|------|-------|
-| module/interface/component | ✅ | ✅ | ✅ | |
-| pin/signal declarations | ✅ | ✅ | ✅ | |
-| connections (~) | ✅ | ✅ | ✅ | |
-| directed connections (~>) | ✅ | ✅ | ? | Needs BRIDGE_CONNECT pragma |
-| imports | ✅ | ✅ | ⚠️ | Parsed but not resolved |
-| for loops | ✅ | ✅ | ✅ | Needs FOR_LOOP pragma |
-| assertions | ✅ | ✅ | ✅ | |
-| quantities/tolerances | ✅ | ✅ | ✅ | |
-| templates | ? | ? | ? | MODULE_TEMPLATING pragma |
-| traits | ? | ? | ? | TRAITS pragma |
-| pragmas | ✅ | ✅ | ? | |
-
-## Completion Promise
-Output <promise>SYNTAX_COVERAGE_COMPLETE</promise> when:
-- All syntax constructs tested
-- Coverage matrix documented
-- Gaps identified and documented
-```
-
----
-
-## Phase 5: Import Resolution 🔲 NOT STARTED
-
-Complete the import system so external modules can actually be used.
-
-### Current State
-
-The parser recognizes imports and ato-sema loads files, but:
-- Imported symbols are NOT merged into the scope
-- `import Resistor` parses but `Resistor` can't be used
-- Cross-file references don't work
-
-### Prompt 13: Package/File Resolution
-
-```markdown
-# Task: Implement Package and File Resolution
-
-Create a module resolution system that can find and load .ato files.
-
-## Requirements
-
-1. **File Resolution**
-   - Resolve `from "path/to/file.ato" import Module`
-   - Handle relative paths from current file
-   - Handle absolute paths from project root
-
-2. **Package Resolution**
-   - Resolve `import Resistor` from standard library
-   - Resolve `from "atopile/generics/resistors.ato" import Resistor`
-   - Look up packages in `ato.yaml` dependencies
-   - Support package install locations (~/.ato/packages/ or similar)
-
-3. **Module Registry**
-   - Build a registry of all available modules/interfaces
-   - Track which file each module comes from
-   - Detect circular imports
-
-## Key Files to Reference
-- `src/atopile/config.py` - How Python finds packages
-- `ato.yaml` files in examples/ - Package dependency format
-
-## Tests Must Pass
-- `cargo test -p ato-sema`
-- Imports in examples resolve correctly
-
-## Completion Promise
-Output <promise>FILE_RESOLUTION_COMPLETE</promise> when:
-- File paths resolve correctly
-- Package paths resolve correctly
-- Tests pass
-```
-
-### Prompt 14: Symbol Merging
-
-```markdown
-# Task: Merge Imported Symbols into Scope
-
-After files are loaded, merge their exports into the importing scope.
-
-## Requirements
-
-1. **Export Detection**
-   - Top-level modules/interfaces/components are exports
-   - Track which symbols each file exports
-
-2. **Scope Merging**
-   - `import Resistor` adds `Resistor` to current scope
-   - `from "file.ato" import X, Y` adds X and Y to scope
-   - `import A.B.C` adds qualified name to scope
-
-3. **Name Resolution Update**
-   - Update name resolver to check imported symbols
-   - Handle qualified names (module.field)
-   - Detect name collisions
-
-4. **Inheritance Across Files**
-   - `module Derived from ImportedBase:` should work
-   - Inherit fields from imported base classes
-
-## Tests Must Pass
-- Examples with imports pass semantic analysis
-- `examples/quickstart/quickstart.ato` fully analyzes
-
-## Completion Promise
-Output <promise>SYMBOL_MERGING_COMPLETE</promise> when:
-- Imported modules can be instantiated
-- Inherited fields are accessible
-- All examples pass sema (with available deps)
-```
-
----
-
-## Phase 6: Solver Integration 🔲 NOT STARTED
-
-Connect the constraint solver to the semantic analysis pipeline.
-
-### Current State
-
-- ato-solver exists and works in isolation
-- ato-sema collects constraints into the IR
-- But they're not connected - `ato build` doesn't actually solve anything
-
-### Prompt 15: Constraint Collection
-
-```markdown
-# Task: Collect Constraints from IR for Solver
-
-Extract all constraints from the IR and prepare them for the solver.
-
-## Requirements
-
-1. **Constraint Extraction**
-   - Walk the IR Design and collect all constraints
-   - Convert IR constraint expressions to solver expressions
-   - Handle parameter references across modules
-
-2. **Parameter Graph**
-   - Build a graph of parameter dependencies
-   - Track which parameters are constrained
-   - Identify free vs constrained parameters
-
-3. **Unit Handling**
-   - Ensure units are consistent in constraints
-   - Convert between compatible units (mV to V, etc.)
-
-## Completion Promise
-Output <promise>CONSTRAINT_COLLECTION_COMPLETE</promise>
-```
-
-### Prompt 16: Solver Execution
-
-```markdown
-# Task: Run Solver and Report Results
-
-Execute the solver on collected constraints and report results.
-
-## Requirements
-
-1. **Solver Invocation**
-   - Pass collected constraints to ato-solver
-   - Run simplification pipeline
-   - Check for satisfiability
-
-2. **Result Handling**
-   - Report solved parameter values
-   - Report unsatisfiable constraints with source locations
-   - Handle partial solutions (some params solved, others free)
-
-3. **CLI Integration**
-   - `ato build` runs solver and reports results
-   - `ato check` validates constraints are satisfiable
-   - Nice error messages for contradictions
-
-## Completion Promise
-Output <promise>SOLVER_INTEGRATION_COMPLETE</promise>
-```
-
----
-
-## Phase 7: Part Selection 🔲 FUTURE
-
-Match solved constraints to real components from part databases.
-
-### Prompt 17: Part Database Interface
-
-```markdown
-# Task: Create Part Database Interface
-
-Define traits and types for querying part databases.
-
-## Requirements
-1. Part query by parameters (resistance, capacitance, etc.)
-2. Part query by manufacturer/MPN
-3. Part query by distributor ID (LCSC, Digikey, etc.)
-4. Footprint/package filtering
-5. Stock/availability checking (optional)
-
-## This phase requires understanding the Python part picker.
-## Reference: src/faebryk/libs/picker/picker.py
-```
-
----
-
-## Phase 8: Output Generation 🔲 FUTURE
-
-Generate actual build artifacts from fully resolved designs.
-
-### Prompt 18: Netlist Generation
-
-```markdown
-# Task: Generate Netlists
-
-Produce netlist files from the resolved design.
-
-## Requirements
-1. KiCad netlist format (.net or .kicad_sch)
-2. Track net names and connections
-3. Include component references and values
-4. Handle hierarchical designs
-
-## Reference: src/faebryk/exporters/netlist/
-```
-
-### Prompt 19: BOM Generation
-
-```markdown
-# Task: Generate Bill of Materials
-
-Produce BOM files for manufacturing.
-
-## Requirements
+**Requirements**:
 1. JLCPCB BOM format (CSV)
 2. Generic BOM format
 3. Include part numbers, quantities, values
 4. Group identical components
 
-## Reference: src/faebryk/exporters/bom/
-```
+**Reference**: `src/faebryk/exporters/bom/`
 
-### Prompt 20: KiCad Project Output
+**Completion**: `<promise>BOM_GENERATION_COMPLETE</promise>`
 
-```markdown
-# Task: Generate KiCad Project Files
+---
 
-Produce complete KiCad project from design.
+#### Prompt 20: KiCad Project Output
 
-## Requirements
+Generate complete KiCad project from design.
+
+**Requirements**:
 1. Schematic file generation
 2. PCB file with footprints placed
-3. Symbol and footprint library references
+3. Symbol/footprint library references
 4. Project file (.kicad_pro)
 
-## This is the most complex output task.
-## May require significant reverse engineering of KiCad formats.
-```
+**Note**: Most complex output task - requires reverse engineering KiCad formats.
+
+**Completion**: `<promise>KICAD_PROJECT_COMPLETE</promise>`
 
 ---
 
 ## Crate Structure
 
-The Rust rewrite consists of pure Rust crates with no Python dependencies:
-
 ```
 crates/
-├── ato-lexer/          # ✅ Tokenization (logos-based)
-├── ato-parser/         # ✅ Parsing → AST (chumsky-based, error recovery)
-├── ato-domain/         # ✅ Quantity/interval/set types
-├── ato-solver/         # ✅ Constraint solver with simplification
-├── ato-ir/             # ✅ Intermediate representation (design graph)
-├── ato-sema/           # ✅ Semantic analysis (name resolution, type checking)
-├── ato-cli/            # ✅ Main compiler binary (orchestrates everything)
-└── ato-tests/          # ✅ E2E test suite (110 tests)
-    ├── fixtures/       # Test fixture .ato files
-    │   ├── parse/      # Parser test fixtures
-    │   ├── sema/       # Semantic analysis fixtures
-    │   ├── solver/     # Solver test fixtures
-    │   └── integration/# Integration test fixtures
-    └── tests/          # Test implementations
+├── ato-lexer/      # ✅ Tokenization (logos)
+├── ato-parser/     # ✅ Parsing → AST (chumsky)
+├── ato-domain/     # ✅ Quantity/interval types
+├── ato-solver/     # ✅ Constraint solver
+├── ato-ir/         # ✅ Intermediate representation
+├── ato-sema/       # ✅ Semantic analysis
+├── ato-cli/        # ✅ Main compiler binary
+├── ato-tests/      # ✅ E2E test suite
+├── ato-parts/      # ✅ Part database interface
+└── ato-export/     # ✅ Netlist/KiCad export
 ```
-
-**Note**: `ato-py` (Python bindings) should be deleted - it was for incremental migration which we're not doing.
 
 ---
 
 ## Key Dependencies
 
 ```toml
-[workspace.dependencies]
-# Lexing
-logos = "0.15"           # Fast lexer generation
-
-# Parsing
-chumsky = "0.9"          # Parser combinators with error recovery
-ariadne = "0.4"          # Beautiful error reporting
-
-# Error handling
-miette = { version = "7", features = ["fancy"] }
-thiserror = "1"
-
-# Data structures
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-
-# CLI
-clap = { version = "4", features = ["derive"] }
-
-# Testing
-insta = "1"              # Snapshot testing
+logos = "0.15"       # Lexer generation
+chumsky = "0.9"      # Parser combinators
+ariadne = "0.4"      # Error reporting
+miette = "7"         # CLI error formatting
+thiserror = "2"      # Error types
+serde = "1"          # Serialization
+clap = "4"           # CLI args
+insta = "1"          # Snapshot testing
 ```
 
 ---
 
-## Testing Strategy
+## Next Steps (Priority Order)
 
-1. **Unit tests**: Each crate has internal tests (`cargo test -p <crate>`)
-2. **Integration tests**: `tests/` directory with end-to-end scenarios
-3. **Golden tests**: Compare output against known-good snapshots
-4. **Example projects**: Build all `examples/` and `packages/` successfully
-
----
-
-## Success Metrics
-
-| Milestone | Metric |
-|-----------|--------|
-| Parse all examples | `ato check examples/**/*.ato` exits 0 |
-| Semantic analysis | No false positives on valid code |
-| Solver correctness | Matches Python solver results |
-| Error quality | Errors point to correct source locations |
-| Performance | 10x faster than Python implementation |
+1. 🔲 **Import resolution** (Prompts 13-14) - Critical for real projects
+2. 🔲 **Solver integration** (Prompts 15-16) - Enables constraint solving
+3. 🔲 **BOM generation** (Prompt 19) - Manufacturing output
+4. 🔲 **KiCad project** (Prompt 20) - Full design output
 
 ---
 
-## Next Steps
+## Key Reference Files
 
-### Completed
-1. ✅ ~~Create ato-lexer~~ - Tokenization with INDENT/DEDENT
-2. ✅ ~~Create ato-parser~~ - AST with error recovery
-3. ✅ ~~Create ato-domain~~ - Quantity/interval types
-4. ✅ ~~Create ato-solver~~ - Constraint solver
-
-### Up Next (in order)
-5. ✅ ~~Cleanup~~ - Remove ato-py, consolidate parser to chumsky only
-6. ✅ ~~Create ato-ir~~ - Intermediate representation for designs
-7. ✅ ~~Create ato-sema~~ - Semantic analysis (imports, names, types)
-8. ✅ ~~Create ato-cli~~ - Main `ato` binary that ties everything together
-9. ✅ ~~E2E tests~~ - Comprehensive test suite validating full pipeline (110 tests)
-10. ✅ ~~Local examples testing~~ - 7/7 examples parse (22 tests)
-11. ✅ ~~Standard library testing~~ - 10/10 stdlib files parse (10 tests)
-12. ✅ ~~External repos testing~~ - 37/42 external files parse (12 tests)
-13. ✅ ~~Syntax coverage~~ - 27/27 core features work (83 tests)
-14. 🔲 **Import resolution** - Package/file resolution + symbol merging (Phase 5)
-15. 🔲 **Solver integration** - Connect solver to build pipeline (Phase 6)
-16. 🔲 **Part selection** - Query part databases (Phase 7)
-17. 🔲 **Output generation** - KiCad, BOM, netlist (Phase 8)
-
----
-
-## Key Files to Reference
-
-### Grammar
 - `src/atopile/parser/AtoLexer.g4` - Token definitions
 - `src/atopile/parser/AtoParser.g4` - Parser grammar
-
-### Frontend
-- `src/atopile/front_end.py` - DSL → Faebryk compiler (3127 lines)
-
-### Solver
-- `src/faebryk/core/parameter.py` - Parameter/Expression types
-- `src/faebryk/core/solver/defaultsolver.py` - Main solver
-
-### Domain Types
-- `src/faebryk/libs/sets/quantity_sets.py` - Physical quantity intervals
+- `src/atopile/front_end.py` - DSL → Faebryk compiler
+- `src/atopile/config.py` - Package resolution
+- `src/faebryk/exporters/` - Output format exporters
