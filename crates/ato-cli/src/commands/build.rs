@@ -17,20 +17,20 @@ use ato_export::{
 use ato_sema::{Analyzer, ConstraintCollector, SemaError};
 use ato_solver::SolverError;
 
-/// Find the stdlib path by looking for src/faebryk/library relative to the project.
+/// Find the stdlib path by looking for crates/ato-sema/stdlib relative to the project.
 fn find_stdlib_path(file_path: &Path) -> Option<PathBuf> {
-    // Try to find the stdlib by walking up from the file path
+    // Try to find the Ato stdlib by walking up from the file path
     let mut current = file_path.parent()?;
 
     for _ in 0..10 {  // Don't go up more than 10 levels
-        // Check for src/faebryk/library
-        let stdlib = current.join("src/faebryk/library");
+        // Check for crates/ato-sema/stdlib (Ato stdlib stubs)
+        let stdlib = current.join("crates/ato-sema/stdlib");
         if stdlib.exists() {
             return Some(stdlib);
         }
 
-        // Also check if we're already in the atopile repo
-        let stdlib = current.join("../src/faebryk/library");
+        // Also check relative paths
+        let stdlib = current.join("../crates/ato-sema/stdlib");
         if stdlib.exists() {
             return Some(stdlib.canonicalize().ok()?);
         }

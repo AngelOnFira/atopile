@@ -1,0 +1,8 @@
+# ElectricSignal interface - electrical signal with reference
+# This is a stub for the Rust compiler
+
+import Electrical, ElectricPower
+
+interface ElectricSignal:
+    line = new Electrical
+    reference = new ElectricPower

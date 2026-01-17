@@ -190,6 +190,7 @@ impl PathResolver {
     /// 1. Try relative to current file's directory
     /// 2. Try relative to project root
     /// 3. Try as package path
+    /// 4. Try in stdlib
     pub fn resolve_path(&self, import_path: &str, current_file: &Path) -> Result<PathBuf, SemaError> {
         let import_path = Path::new(import_path);
 
@@ -220,6 +221,17 @@ impl PathResolver {
                 return self.loader.canonicalize(&package_path)
                     .map_err(|e| SemaError::IoError {
                         message: format!("failed to canonicalize '{}': {}", package_path.display(), e),
+                    });
+            }
+        }
+
+        // 4. Try in stdlib
+        if let Some(stdlib_path) = &self.config.stdlib_path {
+            let stdlib_file = stdlib_path.join(import_path);
+            if self.loader.exists(&stdlib_file) {
+                return self.loader.canonicalize(&stdlib_file)
+                    .map_err(|e| SemaError::IoError {
+                        message: format!("failed to canonicalize '{}': {}", stdlib_file.display(), e),
                     });
             }
         }

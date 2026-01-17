@@ -1,0 +1,15 @@
+# Diode module - two-terminal diode
+# This is a stub for the Rust compiler
+
+import Electrical
+
+module Diode:
+    anode = new Electrical
+    cathode = new Electrical
+    forward_voltage: V
+    current: A
+    reverse_working_voltage: V
+    reverse_leakage_current: A
+
+    trait can_bridge
+    trait has_designator_prefix::prefix<value="D">

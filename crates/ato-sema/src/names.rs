@@ -54,12 +54,18 @@ impl<'a> NameResolver<'a> {
                 self.resolve_block_def(block, scope);
             }
             Statement::Import(import) => {
-                // Register imports in scope
+                // Register imports in scope, but skip if already resolved by resolve_and_merge_imports
                 let from_path = import.from_path.as_ref().map(|s| s.value.clone());
                 for type_ref in &import.imports {
                     let name = type_ref.parts.last()
                         .map(|p| p.name.clone())
                         .unwrap_or_default();
+                    // Skip if already resolved to a module (by resolve_and_merge_imports)
+                    if let Some(binding) = scope.lookup(&name) {
+                        if binding.as_module().is_some() {
+                            continue;
+                        }
+                    }
                     let qualified = type_ref.parts
                         .iter()
                         .map(|p| p.name.clone())
@@ -72,6 +78,12 @@ impl<'a> NameResolver<'a> {
                 let name = import.type_ref.parts.last()
                     .map(|p| p.name.clone())
                     .unwrap_or_default();
+                // Skip if already resolved to a module (by resolve_and_merge_imports)
+                if let Some(binding) = scope.lookup(&name) {
+                    if binding.as_module().is_some() {
+                        return;
+                    }
+                }
                 let qualified = import.type_ref.parts
                     .iter()
                     .map(|p| p.name.clone())

@@ -1,0 +1,12 @@
+# Inductor module - two-terminal inductor
+# This is a stub for the Rust compiler
+
+import Electrical
+
+module Inductor:
+    unnamed = new Electrical[2]
+    inductance: H
+    max_current: A
+
+    trait can_bridge
+    trait has_designator_prefix::prefix<value="L">

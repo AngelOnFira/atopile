@@ -693,4 +693,98 @@ module Outer:
         // This currently fails because `inner` is not found in scope
         assert!(result.is_ok(), "Instance should be accessible in assertion. Errors: {:?}", result.err());
     }
+
+    #[test]
+    fn test_analyze_import_with_stdlib() {
+        // Test that importing from stdlib works when stdlib is configured
+        use tempfile::TempDir;
+
+        // Create a temp stdlib directory with a Resistor.ato file
+        let temp_stdlib = TempDir::new().unwrap();
+        let resistor_path = temp_stdlib.path().join("Resistor.ato");
+        std::fs::write(&resistor_path, r#"
+module Resistor:
+    resistance: ohm
+"#).unwrap();
+
+        // Create source file that imports Resistor
+        let temp_src = TempDir::new().unwrap();
+        let source_path = temp_src.path().join("test.ato");
+        std::fs::write(&source_path, r#"
+import Resistor
+
+module App:
+    r1 = new Resistor
+    assert r1.resistance > 0
+"#).unwrap();
+
+        let source = std::fs::read_to_string(&source_path).unwrap();
+
+        // Analyze with stdlib configured
+        let mut analyzer = Analyzer::new().with_stdlib(temp_stdlib.path());
+        let result = analyzer.analyze_file(&source, &source_path);
+
+        assert!(result.is_ok(), "Import from stdlib should work. Errors: {:?}", result.err());
+        let design = result.unwrap();
+        assert_eq!(design.module_count(), 2); // Resistor + App
+    }
+
+    #[test]
+    fn test_analyze_from_import() {
+        // Test `from "path" import Module` syntax
+        use tempfile::TempDir;
+
+        // Create a temp directory with module files
+        let temp_dir = TempDir::new().unwrap();
+        let resistor_path = temp_dir.path().join("Resistor.ato");
+        std::fs::write(&resistor_path, r#"
+module Resistor:
+    resistance: ohm
+"#).unwrap();
+
+        // Create source file that imports using from-import syntax
+        let source_path = temp_dir.path().join("test.ato");
+        std::fs::write(&source_path, r#"
+from "Resistor.ato" import Resistor
+
+module App:
+    r1 = new Resistor
+"#).unwrap();
+
+        let source = std::fs::read_to_string(&source_path).unwrap();
+
+        let mut analyzer = Analyzer::new();
+        let result = analyzer.analyze_file(&source, &source_path);
+
+        assert!(result.is_ok(), "from-import should work. Errors: {:?}", result.err());
+        let design = result.unwrap();
+        assert_eq!(design.module_count(), 2); // Resistor + App
+    }
+
+    #[test]
+    fn test_analyze_unresolved_import() {
+        // Test that unresolved imports generate errors when using analyze_file
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let source_path = temp_dir.path().join("test.ato");
+        std::fs::write(&source_path, r#"
+import NonExistent
+
+module App:
+    x = new NonExistent
+"#).unwrap();
+
+        let source = std::fs::read_to_string(&source_path).unwrap();
+        let mut analyzer = Analyzer::new();
+        let result = analyzer.analyze_file(&source, &source_path);
+
+        // Should have an unresolved import error
+        assert!(result.is_err(), "Expected error for unresolved import, got {:?}", result);
+        let errors = result.unwrap_err();
+        assert!(
+            errors.iter().any(|e| matches!(e, SemaError::UnresolvedImport { .. })),
+            "Expected UnresolvedImport error, got: {:?}", errors
+        );
+    }
 }

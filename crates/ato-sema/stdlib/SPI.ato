@@ -1,0 +1,11 @@
+# SPI interface - serial peripheral interface
+# This is a stub for the Rust compiler
+
+import ElectricLogic
+
+interface SPI:
+    sclk = new ElectricLogic
+    mosi = new ElectricLogic
+    miso = new ElectricLogic
+    cs = new ElectricLogic
+    frequency: Hz

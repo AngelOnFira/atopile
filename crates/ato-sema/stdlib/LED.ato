@@ -1,0 +1,15 @@
+# LED module - light emitting diode
+# This is a stub for the Rust compiler
+
+import Electrical
+
+module LED:
+    anode = new Electrical
+    cathode = new Electrical
+    forward_voltage: V
+    current: A
+    brightness: cd
+    max_brightness: cd
+
+    trait can_bridge
+    trait has_designator_prefix::prefix<value="D">

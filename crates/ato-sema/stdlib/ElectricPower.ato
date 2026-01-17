@@ -1,0 +1,9 @@
+# ElectricPower interface - power rail with high and low voltage
+# This is a stub for the Rust compiler
+
+import Electrical
+
+interface ElectricPower:
+    hv = new Electrical
+    lv = new Electrical
+    voltage: V

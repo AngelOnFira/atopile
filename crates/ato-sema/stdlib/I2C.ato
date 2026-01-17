@@ -1,0 +1,10 @@
+# I2C interface - two-wire serial interface
+# This is a stub for the Rust compiler
+
+import ElectricLogic
+
+interface I2C:
+    scl = new ElectricLogic
+    sda = new ElectricLogic
+    frequency: Hz
+    address: dimensionless

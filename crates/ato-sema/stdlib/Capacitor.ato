@@ -1,0 +1,12 @@
+# Capacitor module - two-terminal capacitor
+# This is a stub for the Rust compiler
+
+import Electrical
+
+module Capacitor:
+    unnamed = new Electrical[2]
+    capacitance: F
+    max_voltage: V
+
+    trait can_bridge
+    trait has_designator_prefix::prefix<value="C">

@@ -1,0 +1,13 @@
+# Resistor module - two-terminal resistor
+# This is a stub for the Rust compiler
+
+import Electrical
+
+module Resistor:
+    unnamed = new Electrical[2]
+    resistance: ohm
+    max_power: W
+    max_voltage: V
+
+    trait can_bridge
+    trait has_designator_prefix::prefix<value="R">

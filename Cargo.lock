@@ -200,6 +200,7 @@ dependencies = [
  "ato-solver",
  "miette",
  "serde",
+ "tempfile",
  "thiserror",
 ]
 
