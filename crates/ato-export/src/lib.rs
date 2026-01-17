@@ -7,12 +7,13 @@
 //!
 //! - **Netlist**: Generic netlist representation
 //! - **KiCad Netlist**: KiCad-compatible netlist format (.net)
+//! - **BOM**: Bill of Materials in JLCPCB and generic CSV formats
 //!
 //! # Example
 //!
 //! ```
 //! use ato_ir::{Design, ModuleKind, FieldKind};
-//! use ato_export::{Netlist, NetlistBuilder, KicadNetlistExporter};
+//! use ato_export::{Netlist, NetlistBuilder, KicadNetlistExporter, Bom, BomExporter, BomFormat};
 //!
 //! // Create a design
 //! let mut design = Design::new();
@@ -28,10 +29,16 @@
 //! // Export to KiCad format
 //! let exporter = KicadNetlistExporter::new(&netlist);
 //! let output = exporter.export_to_string().expect("Failed to export");
+//!
+//! // Generate BOM from netlist
+//! let bom = Bom::from_netlist_grouped(&netlist);
+//! let bom_exporter = BomExporter::new(&bom);
+//! let bom_csv = bom_exporter.export_to_string(BomFormat::Jlcpcb).expect("Failed to export BOM");
 //! ```
 
 pub mod netlist;
 pub mod kicad;
+pub mod bom;
 
 pub use netlist::{
     Net,
@@ -50,6 +57,13 @@ pub use kicad::{
     KicadNetlist,
     KicadNetlistExporter,
     KicadNode,
+};
+
+pub use bom::{
+    Bom,
+    BomExporter,
+    BomFormat,
+    BomLine,
 };
 
 use thiserror::Error;
@@ -80,6 +94,10 @@ pub type ExportResult<T> = Result<T, ExportError>;
 /// Prelude module for convenient imports.
 pub mod prelude {
     pub use crate::{
+        Bom,
+        BomExporter,
+        BomFormat,
+        BomLine,
         ExportError,
         ExportResult,
         KicadNetlistExporter,
