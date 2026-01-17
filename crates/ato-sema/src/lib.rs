@@ -37,6 +37,7 @@ mod types;
 mod lower;
 mod scope;
 mod analyzer;
+pub mod resolution;
 
 pub use error::{SemaError, SemaResult};
 pub use analyzer::Analyzer;

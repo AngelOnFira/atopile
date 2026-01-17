@@ -131,6 +131,9 @@ fn convert_sema_errors(errors: &[SemaError]) -> Vec<SemanticErrorInfo> {
             SemaError::IoError { message } => {
                 (message.clone(), None, None)
             }
+            SemaError::CircularImport { file } => {
+                (format!("circular import detected: '{}'", file), None, Some("Check for import cycles between files".into()))
+            }
         };
         SemanticErrorInfo { message, span, help }
     }).collect()

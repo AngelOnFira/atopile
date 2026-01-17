@@ -99,6 +99,12 @@ pub enum SemaError {
     IoError {
         message: String,
     },
+
+    /// Circular import detected.
+    #[error("circular import detected: {file}")]
+    CircularImport {
+        file: String,
+    },
 }
 
 impl SemaError {
@@ -214,6 +220,7 @@ impl SemaError {
             SemaError::NotIterable { span, .. } => *span,
             SemaError::ParseError { .. } => None,
             SemaError::IoError { .. } => None,
+            SemaError::CircularImport { .. } => None,
         }
     }
 }

@@ -3,31 +3,39 @@
 //! This module handles finding and loading imported files, building
 //! the module dependency graph.
 
-use crate::error::{ErrorCollector, SemaError};
+pub use crate::error::{ErrorCollector, SemaError};
 use ato_parser::{File, ImportStmt, DepImportStmt, Statement};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-/// Result of parsing a file for imports.
-#[derive(Debug)]
-pub struct ParsedFile {
-    /// The file path.
-    pub path: PathBuf,
-    /// The parsed AST.
-    pub ast: File,
-    /// Imports from this file.
-    pub imports: Vec<ImportInfo>,
-}
+// Re-export public types
+pub use self::types::*;
 
-/// Information about a single import.
-#[derive(Debug, Clone)]
-pub struct ImportInfo {
-    /// The qualified name being imported (e.g., "Module" or "path.to.Module").
-    pub name: String,
-    /// The source file path (if `from "path"` was used).
-    pub from_path: Option<String>,
-    /// The source span of the import statement.
-    pub span: ato_lexer::Span,
+mod types {
+    use super::*;
+    use ato_parser::File;
+
+    /// Result of parsing a file for imports.
+    #[derive(Debug)]
+    pub struct ParsedFile {
+        /// The file path.
+        pub path: PathBuf,
+        /// The parsed AST.
+        pub ast: File,
+        /// Imports from this file.
+        pub imports: Vec<ImportInfo>,
+    }
+
+    /// Information about a single import.
+    #[derive(Debug, Clone)]
+    pub struct ImportInfo {
+        /// The qualified name being imported (e.g., "Module" or "path.to.Module").
+        pub name: String,
+        /// The source file path (if `from "path"` was used).
+        pub from_path: Option<String>,
+        /// The source span of the import statement.
+        pub span: ato_lexer::Span,
+    }
 }
 
 /// Resolves imports and builds a dependency graph.
@@ -225,15 +233,20 @@ impl ImportResolver {
 
     /// Extract import information from an AST.
     fn extract_imports(&self, ast: &File) -> Vec<ImportInfo> {
+        Self::extract_imports_from_ast(ast)
+    }
+
+    /// Extract import information from an AST (static method).
+    pub fn extract_imports_from_ast(ast: &File) -> Vec<ImportInfo> {
         let mut imports = Vec::new();
 
         for stmt in &ast.statements {
             match stmt {
                 Statement::Import(import) => {
-                    self.extract_import_stmt(import, &mut imports);
+                    Self::extract_import_stmt_static(import, &mut imports);
                 }
                 Statement::DepImport(dep_import) => {
-                    self.extract_dep_import_stmt(dep_import, &mut imports);
+                    Self::extract_dep_import_stmt_static(dep_import, &mut imports);
                 }
                 _ => {}
             }
@@ -244,6 +257,11 @@ impl ImportResolver {
 
     /// Extract imports from an import statement.
     fn extract_import_stmt(&self, import: &ImportStmt, imports: &mut Vec<ImportInfo>) {
+        Self::extract_import_stmt_static(import, imports);
+    }
+
+    /// Extract imports from an import statement (static version).
+    fn extract_import_stmt_static(import: &ImportStmt, imports: &mut Vec<ImportInfo>) {
         let from_path = import.from_path.as_ref().map(|s| strip_string_quotes(&s.value));
 
         for type_ref in &import.imports {
@@ -263,6 +281,11 @@ impl ImportResolver {
 
     /// Extract imports from a deprecated import statement.
     fn extract_dep_import_stmt(&self, import: &DepImportStmt, imports: &mut Vec<ImportInfo>) {
+        Self::extract_dep_import_stmt_static(import, imports);
+    }
+
+    /// Extract imports from a deprecated import statement (static version).
+    fn extract_dep_import_stmt_static(import: &DepImportStmt, imports: &mut Vec<ImportInfo>) {
         let name = import.type_ref.parts
             .iter()
             .map(|p| p.name.clone())
