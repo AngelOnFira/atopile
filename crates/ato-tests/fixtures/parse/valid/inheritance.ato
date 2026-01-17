@@ -1,0 +1,6 @@
+module Base:
+    pin p1
+
+module Derived from Base:
+    pin p2
+    p1 ~ p2

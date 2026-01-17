@@ -1,0 +1,8 @@
+---
+source: crates/ato-tests/tests/integration_tests.rs
+expression: "serde_json::json!({\n    \"modules\": design.module_count(), \"fields\": design.field_count(),\n    \"connections\": design.connection_count(), \"constraints\":\n    design.constraint_count(),\n})"
+---
+connections: 1
+constraints: 0
+fields: 5
+modules: 2

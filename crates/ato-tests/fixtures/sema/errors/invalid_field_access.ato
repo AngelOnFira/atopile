@@ -1,0 +1,6 @@
+module Inner:
+    pin a
+
+module Outer:
+    inner = new Inner
+    inner.nonexistent ~ inner.a

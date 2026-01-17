@@ -1,0 +1,82 @@
+---
+source: crates/ato-tests/tests/parse_tests.rs
+expression: serde_json::to_value(&ast).unwrap()
+---
+span:
+  column: 1
+  end: 59
+  line: 1
+  start: 0
+statements:
+  - BlockDef:
+      body:
+        - PinDeclaration:
+            name:
+              Identifier:
+                name: a
+                span:
+                  column: 1
+                  end: 22
+                  line: 1
+                  start: 21
+            span:
+              column: 1
+              end: 22
+              line: 1
+              start: 17
+      kind: Module
+      name:
+        name: Base
+        span:
+          column: 1
+          end: 11
+          line: 1
+          start: 7
+      span:
+        column: 1
+        end: 24
+        line: 1
+        start: 0
+      super_type: ~
+  - BlockDef:
+      body:
+        - PinDeclaration:
+            name:
+              Identifier:
+                name: b
+                span:
+                  column: 1
+                  end: 59
+                  line: 1
+                  start: 58
+            span:
+              column: 1
+              end: 59
+              line: 1
+              start: 54
+      kind: Module
+      name:
+        name: Derived
+        span:
+          column: 1
+          end: 38
+          line: 1
+          start: 31
+      span:
+        column: 1
+        end: 59
+        line: 1
+        start: 24
+      super_type:
+        parts:
+          - name: Base
+            span:
+              column: 1
+              end: 48
+              line: 1
+              start: 44
+        span:
+          column: 1
+          end: 48
+          line: 1
+          start: 44

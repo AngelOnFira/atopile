@@ -1,0 +1,115 @@
+---
+source: crates/ato-tests/tests/parse_tests.rs
+expression: serde_json::to_value(&ast).unwrap()
+---
+span:
+  column: 1
+  end: 53
+  line: 1
+  start: 0
+statements:
+  - BlockDef:
+      body:
+        - Assignment:
+            span:
+              column: 1
+              end: 25
+              line: 1
+              start: 15
+            target:
+              Declaration:
+                name:
+                  name: x
+                  span:
+                    column: 1
+                    end: 16
+                    line: 1
+                    start: 15
+                span:
+                  column: 1
+                  end: 19
+                  line: 1
+                  start: 15
+                type_annotation:
+                  name: V
+                  span:
+                    column: 1
+                    end: 19
+                    line: 1
+                    start: 18
+            value:
+              Physical:
+                Quantity:
+                  span:
+                    column: 1
+                    end: 25
+                    line: 1
+                    start: 22
+                  unit: V
+                  value: "5"
+        - Assignment:
+            span:
+              column: 1
+              end: 53
+              line: 1
+              start: 30
+            target:
+              Declaration:
+                name:
+                  name: y
+                  span:
+                    column: 1
+                    end: 31
+                    line: 1
+                    start: 30
+                span:
+                  column: 1
+                  end: 36
+                  line: 1
+                  start: 30
+                type_annotation:
+                  name: ohm
+                  span:
+                    column: 1
+                    end: 36
+                    line: 1
+                    start: 33
+            value:
+              Physical:
+                Bilateral:
+                  span:
+                    column: 1
+                    end: 53
+                    line: 1
+                    start: 39
+                  tolerance:
+                    is_percent: true
+                    span:
+                      column: 1
+                      end: 53
+                      line: 1
+                      start: 51
+                    unit: ~
+                    value: "5"
+                  value:
+                    span:
+                      column: 1
+                      end: 53
+                      line: 1
+                      start: 51
+                    unit: kohm
+                    value: "10"
+      kind: Module
+      name:
+        name: Test
+        span:
+          column: 1
+          end: 11
+          line: 1
+          start: 7
+      span:
+        column: 1
+        end: 53
+        line: 1
+        start: 0
+      super_type: ~

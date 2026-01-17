@@ -1,0 +1,105 @@
+---
+source: crates/ato-tests/tests/parse_tests.rs
+assertion_line: 138
+expression: "serde_json::to_value(&ast).unwrap()"
+---
+span:
+  column: 1
+  end: 46
+  line: 1
+  start: 0
+statements:
+  - BlockDef:
+      body:
+        - PinDeclaration:
+            name:
+              Identifier:
+                name: p1
+                span:
+                  column: 1
+                  end: 23
+                  line: 1
+                  start: 21
+            span:
+              column: 1
+              end: 23
+              line: 1
+              start: 17
+        - PinDeclaration:
+            name:
+              Identifier:
+                name: p2
+                span:
+                  column: 1
+                  end: 34
+                  line: 1
+                  start: 32
+            span:
+              column: 1
+              end: 34
+              line: 1
+              start: 28
+        - Connection:
+            left:
+              FieldRef:
+                parts:
+                  - index: ~
+                    name:
+                      name: p1
+                      span:
+                        column: 1
+                        end: 41
+                        line: 1
+                        start: 39
+                    span:
+                      column: 1
+                      end: 41
+                      line: 1
+                      start: 39
+                pin_ref: ~
+                span:
+                  column: 1
+                  end: 41
+                  line: 1
+                  start: 39
+            right:
+              FieldRef:
+                parts:
+                  - index: ~
+                    name:
+                      name: p2
+                      span:
+                        column: 1
+                        end: 46
+                        line: 1
+                        start: 44
+                    span:
+                      column: 1
+                      end: 46
+                      line: 1
+                      start: 44
+                pin_ref: ~
+                span:
+                  column: 1
+                  end: 46
+                  line: 1
+                  start: 44
+            span:
+              column: 1
+              end: 46
+              line: 1
+              start: 39
+      kind: Module
+      name:
+        name: Test
+        span:
+          column: 1
+          end: 11
+          line: 1
+          start: 7
+      span:
+        column: 1
+        end: 46
+        line: 1
+        start: 0
+      super_type: ~

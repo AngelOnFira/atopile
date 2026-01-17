@@ -1,0 +1,5 @@
+import Resistor
+import Module1, Module2
+
+module App:
+    r = new Resistor

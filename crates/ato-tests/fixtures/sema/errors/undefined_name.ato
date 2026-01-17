@@ -1,0 +1,3 @@
+module Test:
+    pin p1
+    p1 ~ undefined_pin

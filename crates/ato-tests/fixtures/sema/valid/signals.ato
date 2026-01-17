@@ -1,0 +1,6 @@
+module Test:
+    pin p1
+    pin p2
+    signal sig
+    p1 ~ sig
+    sig ~ p2

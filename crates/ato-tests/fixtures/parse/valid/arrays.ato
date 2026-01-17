@@ -1,0 +1,4 @@
+module Arrays:
+    pin p1
+    container = new SomeModule[10]
+    element = container[3]

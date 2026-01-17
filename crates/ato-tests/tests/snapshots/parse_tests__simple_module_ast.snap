@@ -1,0 +1,32 @@
+---
+source: crates/ato-tests/tests/parse_tests.rs
+expression: serde_json::to_value(&ast).unwrap()
+---
+span:
+  column: 1
+  end: 19
+  line: 1
+  start: 0
+statements:
+  - BlockDef:
+      body:
+        - Pass:
+            span:
+              column: 1
+              end: 19
+              line: 1
+              start: 15
+      kind: Module
+      name:
+        name: Test
+        span:
+          column: 1
+          end: 11
+          line: 1
+          start: 7
+      span:
+        column: 1
+        end: 19
+        line: 1
+        start: 0
+      super_type: ~

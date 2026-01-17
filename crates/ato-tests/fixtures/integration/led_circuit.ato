@@ -1,0 +1,18 @@
+interface Power:
+    pin vcc
+    pin gnd
+
+component LED:
+    pin anode
+    pin cathode
+    forward_voltage: V = 2V +/- 10%
+
+component Resistor:
+    pin 1
+    pin 2
+    resistance: ohm
+
+module LEDCircuit:
+    pin input
+    pin output
+    pin gnd

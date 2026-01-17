@@ -1,0 +1,5 @@
+module WithPins:
+    pin p1
+    pin p2
+    pin 1
+    pin "GND"

@@ -1,0 +1,168 @@
+---
+source: crates/ato-tests/tests/parse_tests.rs
+assertion_line: 145
+expression: "serde_json::to_value(&ast).unwrap()"
+---
+span:
+  column: 1
+  end: 53
+  line: 1
+  start: 0
+statements:
+  - BlockDef:
+      body:
+        - Assignment:
+            span:
+              column: 1
+              end: 26
+              line: 1
+              start: 17
+            target:
+              Declaration:
+                field:
+                  parts:
+                    - index: ~
+                      name:
+                        name: x
+                        span:
+                          column: 1
+                          end: 18
+                          line: 1
+                          start: 17
+                      span:
+                        column: 1
+                        end: 18
+                        line: 1
+                        start: 17
+                  pin_ref: ~
+                  span:
+                    column: 1
+                    end: 18
+                    line: 1
+                    start: 17
+                span:
+                  column: 1
+                  end: 26
+                  line: 1
+                  start: 17
+                type_info:
+                  name: V
+                  span:
+                    column: 1
+                    end: 21
+                    line: 1
+                    start: 20
+            value:
+              Physical:
+                Quantity:
+                  number:
+                    span:
+                      column: 1
+                      end: 26
+                      line: 1
+                      start: 24
+                    value: "5"
+                  span:
+                    column: 1
+                    end: 26
+                    line: 1
+                    start: 24
+                  unit:
+                    name: V
+                    span:
+                      column: 1
+                      end: 26
+                      line: 1
+                      start: 24
+        - Assignment:
+            span:
+              column: 1
+              end: 53
+              line: 1
+              start: 31
+            target:
+              Declaration:
+                field:
+                  parts:
+                    - index: ~
+                      name:
+                        name: y
+                        span:
+                          column: 1
+                          end: 32
+                          line: 1
+                          start: 31
+                      span:
+                        column: 1
+                        end: 32
+                        line: 1
+                        start: 31
+                  pin_ref: ~
+                  span:
+                    column: 1
+                    end: 32
+                    line: 1
+                    start: 31
+                span:
+                  column: 1
+                  end: 53
+                  line: 1
+                  start: 31
+                type_info:
+                  name: ohm
+                  span:
+                    column: 1
+                    end: 37
+                    line: 1
+                    start: 34
+            value:
+              Physical:
+                Bilateral:
+                  base:
+                    number:
+                      span:
+                        column: 1
+                        end: 46
+                        line: 1
+                        start: 40
+                      value: "10"
+                    span:
+                      column: 1
+                      end: 46
+                      line: 1
+                      start: 40
+                    unit:
+                      name: kohm
+                      span:
+                        column: 1
+                        end: 46
+                        line: 1
+                        start: 40
+                  span:
+                    column: 1
+                    end: 53
+                    line: 1
+                    start: 40
+                  tolerance:
+                    is_percent: true
+                    span:
+                      column: 1
+                      end: 53
+                      line: 1
+                      start: 51
+                    unit: ~
+                    value: "5"
+      kind: Module
+      name:
+        name: Test
+        span:
+          column: 1
+          end: 11
+          line: 1
+          start: 7
+      span:
+        column: 1
+        end: 53
+        line: 1
+        start: 0
+      super_type: ~

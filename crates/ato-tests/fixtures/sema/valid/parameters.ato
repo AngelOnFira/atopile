@@ -1,0 +1,8 @@
+module Resistor:
+    pin 1
+    pin 2
+    resistance: ohm
+
+module App:
+    r = new Resistor
+    r.resistance = 10kohm

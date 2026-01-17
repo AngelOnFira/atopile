@@ -1,0 +1,4 @@
+module Test:
+    x: V
+    assert x within 1V to 2V
+    assert x within 5V to 6V

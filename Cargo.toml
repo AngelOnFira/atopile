@@ -18,6 +18,8 @@ chumsky = "0.9"
 ariadne = "0.4"
 num-traits = "0.2"
 clap = { version = "4", features = ["derive"] }
+insta = { version = "1", features = ["yaml"] }
+walkdir = "2"
 
 # Internal crates
 ato-lexer = { path = "crates/ato-lexer" }

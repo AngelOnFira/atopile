@@ -1,0 +1,3 @@
+module Test:
+    voltage: V
+    assert voltage within 3V to 5V

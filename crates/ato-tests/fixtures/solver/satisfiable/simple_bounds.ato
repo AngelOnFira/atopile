@@ -1,0 +1,4 @@
+module Test:
+    x: ohm
+    assert x > 0ohm
+    assert x < 100ohm

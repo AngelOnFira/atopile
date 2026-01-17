@@ -1,0 +1,6 @@
+interface Power:
+    pin vcc
+    pin gnd
+
+module PoweredDevice:
+    power = new Power

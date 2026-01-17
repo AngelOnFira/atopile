@@ -1,0 +1,3 @@
+module Test:
+    resistance: ohm
+    assert resistance within 10kohm +/- 10%

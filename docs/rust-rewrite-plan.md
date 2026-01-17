@@ -14,7 +14,7 @@ This is NOT an incremental migration - we are building a completely new Rust too
 | `ato-solver` | ✅ Complete | Constraint solver with simplification |
 | `ato-ir` | ✅ Complete | Intermediate representation |
 | `ato-sema` | ✅ Complete | Semantic analysis |
-| `ato-cli` | 🔲 Not started | Main compiler CLI |
+| `ato-cli` | ✅ Complete | Main compiler CLI |
 
 ---
 
@@ -250,7 +250,7 @@ Lower parsed AST to IR with full semantic checking.
 
 ## Phase 4: CLI and End-to-End Testing 🔲 IN PROGRESS
 
-### Prompt 7: CLI Foundation
+### Prompt 7: CLI Foundation ✅
 
 ```markdown
 # Task: Implement CLI (ato-cli crate)
@@ -282,11 +282,7 @@ Create the main `ato` binary that orchestrates compilation.
 - `cargo run -p ato-cli -- check examples/*/elec/src/*.ato` passes
 - Integration tests with known-good and known-bad .ato files
 
-## Completion Criteria
-Output <promise>CLI_COMPLETE</promise> when:
-- Can parse real .ato files
-- Reports errors clearly
-- Integration tests pass
+## Completion: CLI_COMPLETE ✅
 ```
 
 ### Prompt 8: End-to-End Test Suite
@@ -367,7 +363,7 @@ crates/
 ├── ato-solver/         # ✅ Constraint solver with simplification
 ├── ato-ir/             # ✅ Intermediate representation (design graph)
 ├── ato-sema/           # ✅ Semantic analysis (name resolution, type checking)
-└── ato-cli/            # 🔲 Main compiler binary (orchestrates everything)
+└── ato-cli/            # ✅ Main compiler binary (orchestrates everything)
 
 tests/
 ├── parse/              # Parser golden tests
@@ -441,7 +437,7 @@ insta = "1"              # Snapshot testing
 5. ✅ ~~Cleanup~~ - Remove ato-py, consolidate parser to chumsky only
 6. ✅ ~~Create ato-ir~~ - Intermediate representation for designs
 7. ✅ ~~Create ato-sema~~ - Semantic analysis (imports, names, types)
-8. 🔲 **Create ato-cli** - Main `ato` binary that ties everything together
+8. ✅ ~~Create ato-cli~~ - Main `ato` binary that ties everything together
 9. 🔲 **E2E tests** - Comprehensive test suite validating full pipeline
 10. 🔲 **Output generation** - KiCad, BOM, netlist (future)
 

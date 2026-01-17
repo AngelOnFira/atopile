@@ -1,0 +1,7 @@
+module Inner:
+    pin a
+    pin b
+    a ~ b
+
+module Outer:
+    inner = new Inner

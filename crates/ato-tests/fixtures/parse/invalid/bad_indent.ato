@@ -1,0 +1,4 @@
+# Bad indentation
+module Test:
+  pin p1
+    pin p2

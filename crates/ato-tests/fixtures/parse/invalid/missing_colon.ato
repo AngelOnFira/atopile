@@ -1,0 +1,3 @@
+# Missing colon after module definition
+module Test
+    pass

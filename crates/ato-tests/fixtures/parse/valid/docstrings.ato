@@ -1,0 +1,4 @@
+module Documented:
+    "This is a docstring for the module"
+    pin p1
+    "Another docstring"
