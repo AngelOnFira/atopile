@@ -17,6 +17,10 @@ This is NOT an incremental migration - we are building a completely new Rust too
 | `ato-cli` | ✅ Complete | Main compiler CLI |
 | `ato-tests` | ✅ Complete | E2E test suite (110 tests) |
 | Real-world tests | ✅ Complete | Testing against examples/packages/external repos (227 tests) |
+| Import resolution | 🔲 Not Started | Phase 5: Package/file resolution + symbol merging |
+| Solver integration | 🔲 Not Started | Phase 6: Connect solver to build pipeline |
+| Part selection | 🔲 Future | Phase 7: Query part databases |
+| Output generation | 🔲 Future | Phase 8: KiCad, BOM, netlist |
 
 ---
 
@@ -490,23 +494,239 @@ Output <promise>SYNTAX_COVERAGE_COMPLETE</promise> when:
 
 ---
 
-## Phase 5: Output Generation 🔲 FUTURE
+## Phase 5: Import Resolution 🔲 NOT STARTED
 
-### Prompt 9: KiCad/Netlist Output
+Complete the import system so external modules can actually be used.
+
+### Current State
+
+The parser recognizes imports and ato-sema loads files, but:
+- Imported symbols are NOT merged into the scope
+- `import Resistor` parses but `Resistor` can't be used
+- Cross-file references don't work
+
+### Prompt 13: Package/File Resolution
 
 ```markdown
-# Task: Generate Build Outputs
+# Task: Implement Package and File Resolution
 
-Produce actual build artifacts from compiled designs.
+Create a module resolution system that can find and load .ato files.
 
 ## Requirements
-1. Netlist generation (connections between components)
-2. BOM generation (bill of materials)
-3. KiCad project output (or compatible format)
-4. Part selection integration (JLCPCB, etc.)
 
-## This phase depends on understanding the current output formats.
-## May require porting the Zig S-expression engine or reimplementing.
+1. **File Resolution**
+   - Resolve `from "path/to/file.ato" import Module`
+   - Handle relative paths from current file
+   - Handle absolute paths from project root
+
+2. **Package Resolution**
+   - Resolve `import Resistor` from standard library
+   - Resolve `from "atopile/generics/resistors.ato" import Resistor`
+   - Look up packages in `ato.yaml` dependencies
+   - Support package install locations (~/.ato/packages/ or similar)
+
+3. **Module Registry**
+   - Build a registry of all available modules/interfaces
+   - Track which file each module comes from
+   - Detect circular imports
+
+## Key Files to Reference
+- `src/atopile/config.py` - How Python finds packages
+- `ato.yaml` files in examples/ - Package dependency format
+
+## Tests Must Pass
+- `cargo test -p ato-sema`
+- Imports in examples resolve correctly
+
+## Completion Promise
+Output <promise>FILE_RESOLUTION_COMPLETE</promise> when:
+- File paths resolve correctly
+- Package paths resolve correctly
+- Tests pass
+```
+
+### Prompt 14: Symbol Merging
+
+```markdown
+# Task: Merge Imported Symbols into Scope
+
+After files are loaded, merge their exports into the importing scope.
+
+## Requirements
+
+1. **Export Detection**
+   - Top-level modules/interfaces/components are exports
+   - Track which symbols each file exports
+
+2. **Scope Merging**
+   - `import Resistor` adds `Resistor` to current scope
+   - `from "file.ato" import X, Y` adds X and Y to scope
+   - `import A.B.C` adds qualified name to scope
+
+3. **Name Resolution Update**
+   - Update name resolver to check imported symbols
+   - Handle qualified names (module.field)
+   - Detect name collisions
+
+4. **Inheritance Across Files**
+   - `module Derived from ImportedBase:` should work
+   - Inherit fields from imported base classes
+
+## Tests Must Pass
+- Examples with imports pass semantic analysis
+- `examples/quickstart/quickstart.ato` fully analyzes
+
+## Completion Promise
+Output <promise>SYMBOL_MERGING_COMPLETE</promise> when:
+- Imported modules can be instantiated
+- Inherited fields are accessible
+- All examples pass sema (with available deps)
+```
+
+---
+
+## Phase 6: Solver Integration 🔲 NOT STARTED
+
+Connect the constraint solver to the semantic analysis pipeline.
+
+### Current State
+
+- ato-solver exists and works in isolation
+- ato-sema collects constraints into the IR
+- But they're not connected - `ato build` doesn't actually solve anything
+
+### Prompt 15: Constraint Collection
+
+```markdown
+# Task: Collect Constraints from IR for Solver
+
+Extract all constraints from the IR and prepare them for the solver.
+
+## Requirements
+
+1. **Constraint Extraction**
+   - Walk the IR Design and collect all constraints
+   - Convert IR constraint expressions to solver expressions
+   - Handle parameter references across modules
+
+2. **Parameter Graph**
+   - Build a graph of parameter dependencies
+   - Track which parameters are constrained
+   - Identify free vs constrained parameters
+
+3. **Unit Handling**
+   - Ensure units are consistent in constraints
+   - Convert between compatible units (mV to V, etc.)
+
+## Completion Promise
+Output <promise>CONSTRAINT_COLLECTION_COMPLETE</promise>
+```
+
+### Prompt 16: Solver Execution
+
+```markdown
+# Task: Run Solver and Report Results
+
+Execute the solver on collected constraints and report results.
+
+## Requirements
+
+1. **Solver Invocation**
+   - Pass collected constraints to ato-solver
+   - Run simplification pipeline
+   - Check for satisfiability
+
+2. **Result Handling**
+   - Report solved parameter values
+   - Report unsatisfiable constraints with source locations
+   - Handle partial solutions (some params solved, others free)
+
+3. **CLI Integration**
+   - `ato build` runs solver and reports results
+   - `ato check` validates constraints are satisfiable
+   - Nice error messages for contradictions
+
+## Completion Promise
+Output <promise>SOLVER_INTEGRATION_COMPLETE</promise>
+```
+
+---
+
+## Phase 7: Part Selection 🔲 FUTURE
+
+Match solved constraints to real components from part databases.
+
+### Prompt 17: Part Database Interface
+
+```markdown
+# Task: Create Part Database Interface
+
+Define traits and types for querying part databases.
+
+## Requirements
+1. Part query by parameters (resistance, capacitance, etc.)
+2. Part query by manufacturer/MPN
+3. Part query by distributor ID (LCSC, Digikey, etc.)
+4. Footprint/package filtering
+5. Stock/availability checking (optional)
+
+## This phase requires understanding the Python part picker.
+## Reference: src/faebryk/libs/picker/picker.py
+```
+
+---
+
+## Phase 8: Output Generation 🔲 FUTURE
+
+Generate actual build artifacts from fully resolved designs.
+
+### Prompt 18: Netlist Generation
+
+```markdown
+# Task: Generate Netlists
+
+Produce netlist files from the resolved design.
+
+## Requirements
+1. KiCad netlist format (.net or .kicad_sch)
+2. Track net names and connections
+3. Include component references and values
+4. Handle hierarchical designs
+
+## Reference: src/faebryk/exporters/netlist/
+```
+
+### Prompt 19: BOM Generation
+
+```markdown
+# Task: Generate Bill of Materials
+
+Produce BOM files for manufacturing.
+
+## Requirements
+1. JLCPCB BOM format (CSV)
+2. Generic BOM format
+3. Include part numbers, quantities, values
+4. Group identical components
+
+## Reference: src/faebryk/exporters/bom/
+```
+
+### Prompt 20: KiCad Project Output
+
+```markdown
+# Task: Generate KiCad Project Files
+
+Produce complete KiCad project from design.
+
+## Requirements
+1. Schematic file generation
+2. PCB file with footprints placed
+3. Symbol and footprint library references
+4. Project file (.kicad_pro)
+
+## This is the most complex output task.
+## May require significant reverse engineering of KiCad formats.
 ```
 
 ---
@@ -604,7 +824,10 @@ insta = "1"              # Snapshot testing
 11. ✅ ~~Standard library testing~~ - 10/10 stdlib files parse (10 tests)
 12. ✅ ~~External repos testing~~ - 37/42 external files parse (12 tests)
 13. ✅ ~~Syntax coverage~~ - 27/27 core features work (83 tests)
-14. 🔲 **Output generation** - KiCad, BOM, netlist (future)
+14. 🔲 **Import resolution** - Package/file resolution + symbol merging (Phase 5)
+15. 🔲 **Solver integration** - Connect solver to build pipeline (Phase 6)
+16. 🔲 **Part selection** - Query part databases (Phase 7)
+17. 🔲 **Output generation** - KiCad, BOM, netlist (Phase 8)
 
 ---
 
