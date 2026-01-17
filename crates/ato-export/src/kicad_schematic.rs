@@ -5,6 +5,7 @@
 use std::io::Write;
 use uuid::Uuid;
 
+use crate::kicad_library::LibraryMapper;
 use crate::netlist::{Netlist, NetlistComponent};
 use crate::ExportError;
 
@@ -296,9 +297,18 @@ pub struct SchematicSymbol {
 impl SchematicSymbol {
     /// Create a symbol from a netlist component.
     pub fn from_component(comp: &NetlistComponent, x: f64, y: f64) -> Self {
-        let lib_id = get_lib_id_for_component(comp);
+        let mapper = LibraryMapper::new();
+        let lib_id = mapper.get_symbol_lib_id(&comp.reference);
 
-        let mut properties = vec![
+        // Determine the footprint - use provided one or get from mapper
+        let footprint = comp.footprint.clone().unwrap_or_else(|| {
+            // Extract package from component properties if available
+            let package = comp.properties.get("package")
+                .map(|s| s.as_str());
+            mapper.get_footprint_name(&comp.reference, package)
+        });
+
+        let properties = vec![
             InstanceProperty {
                 name: "Reference".to_string(),
                 value: comp.reference.clone(),
@@ -311,16 +321,13 @@ impl SchematicSymbol {
                 id: 1,
                 position: (x, y + 2.54),
             },
-        ];
-
-        if let Some(fp) = &comp.footprint {
-            properties.push(InstanceProperty {
+            InstanceProperty {
                 name: "Footprint".to_string(),
-                value: fp.clone(),
+                value: footprint,
                 id: 2,
                 position: (x, y + 5.08),
-            });
-        }
+            },
+        ];
 
         Self {
             lib_id,
@@ -427,20 +434,8 @@ impl Label {
 
 /// Get the library ID for a component based on its reference prefix.
 fn get_lib_id_for_component(comp: &NetlistComponent) -> String {
-    let prefix = comp.reference.chars().take_while(|c| c.is_alphabetic()).collect::<String>();
-
-    match prefix.as_str() {
-        "R" => "Device:R".to_string(),
-        "C" => "Device:C".to_string(),
-        "L" => "Device:L".to_string(),
-        "D" => "Device:D".to_string(),
-        "Q" => "Device:Q_NPN_BCE".to_string(),
-        "U" => "Device:IC".to_string(),
-        "J" | "P" => "Connector:Conn_01x02".to_string(),
-        "Y" => "Device:Crystal".to_string(),
-        "SW" => "Switch:SW_Push".to_string(),
-        _ => format!("Device:{}", comp.reference.clone()),
-    }
+    let mapper = LibraryMapper::new();
+    mapper.get_symbol_lib_id(&comp.reference)
 }
 
 /// Escape a string for S-expression output.
@@ -495,8 +490,20 @@ mod tests {
         let c = NetlistComponent::new("C1", "100nF");
         assert_eq!(get_lib_id_for_component(&c), "Device:C");
 
+        let l = NetlistComponent::new("L1", "100uH");
+        assert_eq!(get_lib_id_for_component(&l), "Device:L");
+
+        let d = NetlistComponent::new("D1", "1N4148");
+        assert_eq!(get_lib_id_for_component(&d), "Device:D");
+
+        let led = NetlistComponent::new("LED1", "RED");
+        assert_eq!(get_lib_id_for_component(&led), "Device:LED");
+
         let u = NetlistComponent::new("U1", "ATmega328P");
         assert_eq!(get_lib_id_for_component(&u), "Device:IC");
+
+        let q = NetlistComponent::new("Q1", "2N2222");
+        assert_eq!(get_lib_id_for_component(&q), "Device:Q_NPN_BCE");
     }
 
     #[test]

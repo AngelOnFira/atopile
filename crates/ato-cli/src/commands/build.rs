@@ -271,9 +271,9 @@ pub fn run(path: &Path, output: Option<&Path>, verbose: bool) -> CliResult<()> {
         }
     }
 
-    // Generate KiCad project file
+    // Generate KiCad project file with library configuration
     let project_path = output_dir.join(format!("{}.kicad_pro", project_name));
-    let kicad_project = KicadProject::new(project_name);
+    let kicad_project = KicadProject::new_with_libraries(project_name);
     match kicad_project.to_json() {
         Ok(content) => {
             if let Err(e) = fs::write(&project_path, &content) {

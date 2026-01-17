@@ -5,6 +5,7 @@
 use std::io::Write;
 use serde::{Deserialize, Serialize};
 
+use crate::kicad_library::LibraryMapper;
 use crate::ExportError;
 
 /// KiCad project file version.
@@ -69,6 +70,24 @@ impl KicadProject {
         let json = self.to_json()?;
         writer.write_all(json.as_bytes())?;
         Ok(())
+    }
+
+    /// Configure the project with commonly used libraries.
+    pub fn configure_libraries(&mut self) {
+        let mapper = LibraryMapper::new();
+
+        // Add commonly used symbol libraries
+        self.libraries.pinned_symbol_libs = mapper.get_symbol_libraries();
+
+        // Add commonly used footprint libraries
+        self.libraries.pinned_footprint_libs = mapper.get_footprint_libraries();
+    }
+
+    /// Create a new project with default library configuration.
+    pub fn new_with_libraries(name: &str) -> Self {
+        let mut project = Self::new(name);
+        project.configure_libraries();
+        project
     }
 }
 
@@ -353,5 +372,29 @@ mod tests {
         assert_eq!(nc.name, "Default");
         assert_eq!(nc.clearance, 0.2);
         assert_eq!(nc.track_width, 0.2);
+    }
+
+    #[test]
+    fn test_kicad_project_with_libraries() {
+        let project = KicadProject::new_with_libraries("test");
+
+        // Should have symbol libraries configured
+        assert!(!project.libraries.pinned_symbol_libs.is_empty());
+        assert!(project.libraries.pinned_symbol_libs.contains(&"Device".to_string()));
+
+        // Should have footprint libraries configured
+        assert!(!project.libraries.pinned_footprint_libs.is_empty());
+        assert!(project.libraries.pinned_footprint_libs.contains(&"Resistor_SMD".to_string()));
+    }
+
+    #[test]
+    fn test_kicad_project_libraries_in_json() {
+        let project = KicadProject::new_with_libraries("test");
+        let json = project.to_json().unwrap();
+
+        assert!(json.contains("pinned_symbol_libs"));
+        assert!(json.contains("pinned_footprint_libs"));
+        assert!(json.contains("Device"));
+        assert!(json.contains("Resistor_SMD"));
     }
 }

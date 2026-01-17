@@ -5,6 +5,7 @@
 use std::io::Write;
 use uuid::Uuid;
 
+use crate::kicad_library::LibraryMapper;
 use crate::netlist::{Net, Netlist, NetlistComponent};
 use crate::ExportError;
 
@@ -297,16 +298,14 @@ pub struct Footprint {
 impl Footprint {
     /// Create a footprint from a netlist component.
     pub fn from_component(comp: &NetlistComponent, x: f64, y: f64, nets: &[Net]) -> Self {
+        let mapper = LibraryMapper::new();
+
+        // Use provided footprint or get from mapper based on component type and package
         let library = comp.footprint.clone().unwrap_or_else(|| {
-            // Generate a default footprint based on component type
-            let prefix = comp.reference.chars().take_while(|c| c.is_alphabetic()).collect::<String>();
-            match prefix.as_str() {
-                "R" => "Resistor_SMD:R_0402_1005Metric".to_string(),
-                "C" => "Capacitor_SMD:C_0402_1005Metric".to_string(),
-                "L" => "Inductor_SMD:L_0402_1005Metric".to_string(),
-                "D" => "Diode_SMD:D_0402_1005Metric".to_string(),
-                _ => format!("Package_SO:SO-8_3.9x4.9mm_P1.27mm"),
-            }
+            // Extract package from component properties if available
+            let package = comp.properties.get("package")
+                .map(|s| s.as_str());
+            mapper.get_footprint_name(&comp.reference, package)
         });
 
         let properties = vec![

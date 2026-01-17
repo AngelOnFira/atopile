@@ -43,6 +43,7 @@ pub mod bom;
 pub mod kicad_project;
 pub mod kicad_schematic;
 pub mod kicad_pcb;
+pub mod kicad_library;
 
 pub use netlist::{
     Net,
@@ -97,6 +98,14 @@ pub use kicad_pcb::{
     Zone,
     Graphic,
     PcbNet,
+};
+
+pub use kicad_library::{
+    LibraryMapper,
+    ComponentType,
+    SymbolRef,
+    FootprintRef,
+    Package,
 };
 
 use thiserror::Error;
