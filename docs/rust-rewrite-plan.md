@@ -16,6 +16,7 @@ This is NOT an incremental migration - we are building a completely new Rust too
 | `ato-sema` | ✅ Complete | Semantic analysis |
 | `ato-cli` | ✅ Complete | Main compiler CLI |
 | `ato-tests` | ✅ Complete | E2E test suite (110 tests) |
+| Real-world tests | 🔲 In Progress | Testing against examples/packages/external repos |
 
 ---
 
@@ -327,6 +328,168 @@ Build a comprehensive test suite that validates the full compiler pipeline.
 
 ---
 
+## Phase 4.5: Real-World Project Testing 🔲 IN PROGRESS
+
+Test the Rust compiler against real atopile projects and packages to ensure compatibility with production code.
+
+### Prompt 9: Local Examples Testing
+
+```markdown
+# Task: Test Against Local Examples
+
+Parse and analyze all example projects in the atopile repository.
+
+## Test Targets (by complexity)
+
+### Simple
+1. `examples/quickstart/quickstart.ato` - Basic resistor, single import
+2. `examples/layout_reuse/layout_reuse.ato` - Sub-module arrays, bridge connections
+
+### Medium
+3. `examples/equations/equations.ato` - Voltage divider, constraint equations
+4. `examples/pick_parts/pick_parts.ato` - Part selection, pragmas, FOR_LOOP
+5. `examples/i2c/i2c.ato` - Multi-module I2C, templating, local imports
+
+### Complex
+6. `examples/esp32_minimal/esp32_minimal.ato` - External package imports, power rails
+7. `examples/led_badge/led_badge.ato` - 100+ lines, multiple subsystems, LED matrix
+
+## Requirements
+
+1. Create test harness that runs `ato parse` on each example
+2. Track which examples parse successfully vs fail
+3. For failures, categorize the error type:
+   - Lexer error (unknown token)
+   - Parser error (syntax)
+   - Unsupported feature (pragma, template, etc.)
+4. Create fixture tests for each example
+5. Document gaps between Rust and Python parser capabilities
+
+## Success Criteria
+- All examples parse without lexer/parser errors
+- Semantic analysis runs (even if imports fail)
+- Clear error messages for unsupported features
+
+## Completion Promise
+Output <promise>LOCAL_EXAMPLES_COMPLETE</promise> when:
+- All 7 examples tested
+- Test results documented
+- Fixture tests created
+```
+
+### Prompt 10: Standard Library Testing
+
+```markdown
+# Task: Test Standard Library Files
+
+Parse all .ato files in the standard library.
+
+## Test Targets
+- `src/faebryk/library/interfaces.ato` - Protocol interfaces (I2S, SPI, CAN, USB_PD, etc.)
+- `src/faebryk/library/resistors.ato` - I2CPullup module
+- `src/faebryk/library/diodes.ato` - PowerDiodeOr, bridge rectifier
+- `src/faebryk/library/mosfets.ato` - HalfBridge, LowSideSwitch
+- `src/faebryk/library/regulators.ato` - Buck, Boost, LDO variants
+- `src/faebryk/library/filters.ato` - LowPassPiFilter
+- `src/faebryk/library/vdivs.ato` - Voltage divider
+- `src/faebryk/library/oscillators.ato` - Crystal oscillator
+- `src/faebryk/library/debug.ato` - TestPoint
+
+## Requirements
+1. Parse each library file
+2. Verify module/interface definitions are extracted
+3. Test that library patterns (interfaces, traits) are handled
+
+## Completion Promise
+Output <promise>STDLIB_TESTS_COMPLETE</promise> when all library files parse successfully.
+```
+
+### Prompt 11: External Repository Testing
+
+```markdown
+# Task: Test Against External Atopile Repos
+
+Clone and test against real-world atopile projects from GitHub.
+
+## Repositories to Test
+
+### Package Repos (simpler, self-contained)
+1. `atopile/generics` - Standard library (resistors, capacitors, LEDs, interfaces)
+2. `atopile/rp2040` - RP2040 microcontroller module
+3. `atopile/esp32-s3` - ESP32-S3 module
+
+### Hardware Project Repos (complex, multiple files)
+4. `atopile/spin-servo-drive` - BLDC servo controller (115 stars)
+5. `atopile/nonos` - Smart speaker with CM5, DSP, amp (51 stars)
+
+### Community Repos
+6. `u-fire/esp32c3-ato` - ESP32-C3-MINI module
+
+## Test Approach
+
+1. Clone each repo to `crates/ato-tests/external/` (gitignored)
+2. Find all .ato files recursively
+3. Run `ato parse` on each file
+4. Collect and categorize results:
+   - ✅ Parses successfully
+   - ⚠️ Parses with warnings
+   - ❌ Parse error (with error type)
+5. Create summary report
+
+## Requirements
+- Script to clone/update repos
+- Test harness for external projects
+- CI-friendly (can skip if repos unavailable)
+- Report showing compatibility percentage
+
+## Completion Promise
+Output <promise>EXTERNAL_REPOS_COMPLETE</promise> when:
+- At least 3 external repos tested
+- Compatibility report generated
+- Major parse failures documented as issues
+```
+
+### Prompt 12: Syntax Coverage Validation
+
+```markdown
+# Task: Validate Full Syntax Coverage
+
+Use the comprehensive syntax example file to verify all language features.
+
+## Test Target
+- `src/vscode-atopile/syntax_examples.ato` - 200 lines covering all syntax features
+
+## Requirements
+1. Parse the full syntax examples file
+2. For each syntax construct, verify:
+   - Lexer produces correct tokens
+   - Parser produces correct AST node
+   - AST can be serialized to JSON
+3. Create a syntax coverage matrix:
+
+| Feature | Lexer | Parser | Sema | Notes |
+|---------|-------|--------|------|-------|
+| module/interface/component | ✅ | ✅ | ✅ | |
+| pin/signal declarations | ✅ | ✅ | ✅ | |
+| connections (~) | ✅ | ✅ | ✅ | |
+| directed connections (~>) | ✅ | ✅ | ? | Needs BRIDGE_CONNECT pragma |
+| imports | ✅ | ✅ | ⚠️ | Parsed but not resolved |
+| for loops | ✅ | ✅ | ✅ | Needs FOR_LOOP pragma |
+| assertions | ✅ | ✅ | ✅ | |
+| quantities/tolerances | ✅ | ✅ | ✅ | |
+| templates | ? | ? | ? | MODULE_TEMPLATING pragma |
+| traits | ? | ? | ? | TRAITS pragma |
+| pragmas | ✅ | ✅ | ? | |
+
+## Completion Promise
+Output <promise>SYNTAX_COVERAGE_COMPLETE</promise> when:
+- All syntax constructs tested
+- Coverage matrix documented
+- Gaps identified and documented
+```
+
+---
+
 ## Phase 5: Output Generation 🔲 FUTURE
 
 ### Prompt 9: KiCad/Netlist Output
@@ -437,7 +600,11 @@ insta = "1"              # Snapshot testing
 7. ✅ ~~Create ato-sema~~ - Semantic analysis (imports, names, types)
 8. ✅ ~~Create ato-cli~~ - Main `ato` binary that ties everything together
 9. ✅ ~~E2E tests~~ - Comprehensive test suite validating full pipeline (110 tests)
-10. 🔲 **Output generation** - KiCad, BOM, netlist (future)
+10. 🔲 **Local examples testing** - Test all 7 examples in examples/ directory
+11. 🔲 **Standard library testing** - Test all .ato files in src/faebryk/library/
+12. 🔲 **External repos testing** - Test against atopile/generics, rp2040, esp32-s3, etc.
+13. 🔲 **Syntax coverage** - Validate full language coverage with syntax_examples.ato
+14. 🔲 **Output generation** - KiCad, BOM, netlist (future)
 
 ---
 
