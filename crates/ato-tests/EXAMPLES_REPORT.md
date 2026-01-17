@@ -8,8 +8,9 @@ This report documents the Rust parser's compatibility with real-world atopile fi
 |----------|--------|--------|--------|-----------|
 | Example Projects | 7 | 7 | 0 | **100%** |
 | Standard Library | 10 | 10 | 0 | **100%** |
+| External Repos | 42 | 37 | 5 | **88%** |
 | Syntax Examples | 1 | 0 | 1 | 0% |
-| **Total** | **18** | **17** | **1** | **94%** |
+| **Total** | **60** | **54** | **6** | **90%** |
 
 ## Example Projects (7/7 ✅)
 
@@ -68,6 +69,65 @@ All standard library `.ato` files in `src/faebryk/library/` parse successfully:
 | regulators.ato | Buck, Boost, LDO variants |
 | resistors.ato | I2CPullup |
 | vdivs.ato | Voltage divider |
+
+## External Repositories (37/42 = 88%)
+
+Tested against cloned repos from the atopile organization:
+
+### atopile/generics (27/29 files)
+
+| File | Status | Notes |
+|------|--------|-------|
+| resistors.ato | ✅ | |
+| capacitors.ato | ✅ | |
+| interfaces.ato | ✅ | |
+| leds.ato | ✅ | |
+| regulators.ato | ✅ | |
+| diodes.ato | ✅ | |
+| mosfets.ato | ✅ | |
+| transistors.ato | ✅ | |
+| oscillators.ato | ✅ | |
+| filters.ato | ✅ | |
+| inductors.ato | ✅ | |
+| opamps.ato | ✅ | |
+| connectors.ato | ✅ | |
+| debug.ato | ✅ | |
+| vdivs.ato | ❌ | Uses `in` as identifier |
+| buttons.ato | ❌ | Uses `in` as signal name |
+| (16 elec/src/* files) | ✅ | Auto-generated component files |
+
+### atopile/rp2040 (0/1 files)
+
+| File | Status | Notes |
+|------|--------|-------|
+| RP2040Kit.ato | ❌ | Uses `in` as signal name |
+
+### atopile/esp32-s3 (10/12 files)
+
+| File | Status | Notes |
+|------|--------|-------|
+| Most files | ✅ | |
+| base.ato | ❌ | Uses Unicode `Ω` for ohms |
+| tps63020dsjr.ato | ❌ | Uses `in` as field name |
+
+### Known Parser Gaps from External Repos
+
+1. **`in` keyword conflict** (4 failures)
+   - `in` is a Python keyword for `for x in y` loops
+   - Hardware designs commonly use `in` for input signals
+   - Files affected: vdivs.ato, buttons.ato, RP2040Kit.ato, tps63020dsjr.ato
+
+2. **Unicode unit symbols** (1 failure)
+   - `Ω` (Unicode omega) used for ohms
+   - Rust lexer only supports ASCII `ohm`
+   - File affected: base.ato
+
+### Recommendations
+
+1. Allow `in` as an identifier when not in a for-loop context
+2. Support Unicode `Ω` as an alias for `ohm`
+
+---
 
 ## Syntax Examples (0/1 ❌)
 
