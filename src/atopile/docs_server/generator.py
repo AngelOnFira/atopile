@@ -2,10 +2,19 @@
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Dict, List, Any
+import html
 
 from jinja2 import Environment, FileSystemLoader
+try:
+    from pygments import highlight
+    from pygments.lexers import get_lexer_by_name
+    from pygments.formatters import HtmlFormatter
+    PYGMENTS_AVAILABLE = True
+except ImportError:
+    PYGMENTS_AVAILABLE = False
 
 from atopile import front_end
 from atopile.datatypes import TypeRef
@@ -43,6 +52,11 @@ class DocGenerator:
         
         # Build inheritance relationships
         self._build_inheritance_chains()
+        
+        # Make imports clickable
+        for module in self.modules:
+            if 'imports' in module and module['imports']:
+                module['imports'] = self._make_imports_clickable(module['imports'])
         
         # Generate pages
         self._generate_index()
@@ -116,7 +130,7 @@ class DocGenerator:
                 # Parse inheritance and imports
                 data.update(self._parse_file_metadata(content, str(ref)))
                 
-                # Simple source code extraction - can be improved
+                # Extract and format source code
                 lines = content.split('\n')
                 for i, line in enumerate(lines):
                     if f"module {ref}" in line or f"interface {ref}" in line:
@@ -129,8 +143,13 @@ class DocGenerator:
                             if next_line.strip() and len(next_line) - len(next_line.lstrip()) <= indent:
                                 break
                             source_lines.append(next_line)
-                            
-                        data['source_code'] = '\n'.join(source_lines[:20])  # Limit to 20 lines
+                        
+                        # Limit to 50 lines and format with syntax highlighting
+                        raw_source = '\n'.join(source_lines[:50])
+                        data['source_code'] = self._format_source_code(raw_source)
+                        
+                        # Parse module contents
+                        data.update(self._parse_module_contents(source_lines))
                         break
         except Exception:
             pass
@@ -205,6 +224,141 @@ class DocGenerator:
         }
         return icons.get(type_name, '📄')
     
+    def _format_source_code(self, source_code: str) -> str:
+        """Format source code with syntax highlighting."""
+        if not source_code:
+            return ""
+            
+        if PYGMENTS_AVAILABLE:
+            try:
+                # Use Python lexer as closest match for .ato syntax
+                lexer = get_lexer_by_name('python')
+                formatter = HtmlFormatter(
+                    style='default',
+                    cssclass='highlight',
+                    noclasses=True,
+                    nowrap=False,  # Keep line structure
+                    linenos=False
+                )
+                highlighted = highlight(source_code, lexer, formatter)
+                # Remove the outer <div> wrapper that Pygments adds, keep inner content
+                if highlighted.startswith('<div class="highlight"'):
+                    # Find the end of the opening div tag and start of closing div tag
+                    start_pos = highlighted.find('>') + 1
+                    end_pos = highlighted.rfind('</div>')
+                    if start_pos > 0 and end_pos > start_pos:
+                        highlighted = highlighted[start_pos:end_pos]
+                return highlighted
+            except Exception as e:
+                logger.warning(f"Failed to highlight source code: {e}")
+                
+        # Fallback: escape HTML and preserve formatting
+        return html.escape(source_code)
+    
+    def _parse_module_contents(self, source_lines: List[str]) -> Dict[str, Any]:
+        """Parse module contents to extract pins, signals, parameters, etc."""
+        result = {
+            'pins': [],
+            'signals': [],
+            'parameters': [],
+            'instances': [],
+            'connections': [],
+            'assertions': []
+        }
+        
+        for line in source_lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith('#') or stripped.startswith('"""') or stripped.startswith("'''"):
+                continue
+                
+            # Parse pins: pin 1, pin "name", pin variable
+            if stripped.startswith('pin '):
+                pin_def = stripped[4:].split('~')[0].strip()  # Remove connections
+                result['pins'].append({
+                    'name': pin_def,
+                    'line': stripped
+                })
+                
+            # Parse signals: signal name ~ pin X
+            elif stripped.startswith('signal '):
+                parts = stripped.split('~')
+                signal_name = parts[0][7:].strip()  # Remove 'signal '
+                connection = parts[1].strip() if len(parts) > 1 else None
+                result['signals'].append({
+                    'name': signal_name,
+                    'connection': connection,
+                    'line': stripped
+                })
+                
+            # Parse parameters: variable = value, variable: type = value
+            elif '=' in stripped and not stripped.startswith(('import ', 'from ', 'assert ', 'module ', 'interface ')):
+                if ' = ' in stripped:
+                    parts = stripped.split(' = ', 1)
+                    param_def = parts[0].strip()
+                    value = parts[1].strip()
+                    
+                    # Check for type annotation
+                    param_type = None
+                    if ':' in param_def:
+                        name_type = param_def.split(':', 1)
+                        param_name = name_type[0].strip()
+                        param_type = name_type[1].strip()
+                    else:
+                        param_name = param_def
+                        
+                    result['parameters'].append({
+                        'name': param_name,
+                        'type': param_type,
+                        'value': value,
+                        'line': stripped
+                    })
+                    
+            # Parse instances: variable = new Type
+            elif ' = new ' in stripped:
+                parts = stripped.split(' = new ', 1)
+                instance_name = parts[0].strip()
+                instance_type = parts[1].strip()
+                
+                # Handle templated types: Type<param=value>
+                if '<' in instance_type:
+                    base_type = instance_type.split('<')[0]
+                    template_params = instance_type[instance_type.find('<')+1:instance_type.rfind('>')]
+                else:
+                    base_type = instance_type
+                    template_params = None
+                    
+                # Handle arrays: Type[count]
+                array_size = None
+                if '[' in base_type:
+                    base_type, array_part = base_type.split('[', 1)
+                    array_size = array_part.rstrip(']')
+                    
+                result['instances'].append({
+                    'name': instance_name,
+                    'type': base_type,
+                    'array_size': array_size,
+                    'template_params': template_params,
+                    'line': stripped
+                })
+                
+            # Parse connections: a ~ b, a ~> b, a <~ b
+            elif any(op in stripped for op in [' ~ ', ' ~> ', ' <~ ']):
+                # Skip signal definitions (already handled above)
+                if not stripped.startswith('signal '):
+                    result['connections'].append({
+                        'line': stripped
+                    })
+                    
+            # Parse assertions: assert condition
+            elif stripped.startswith('assert '):
+                assertion = stripped[7:].strip()  # Remove 'assert '
+                result['assertions'].append({
+                    'condition': assertion,
+                    'line': stripped
+                })
+                
+        return result
+    
     def _parse_file_metadata(self, content: str, module_name: str) -> Dict[str, Any]:
         """Parse imports and inheritance from file content."""
         result = {
@@ -219,7 +373,10 @@ class DocGenerator:
             
             # Parse imports
             if stripped.startswith('import ') or stripped.startswith('from '):
-                result['imports'].append(stripped)
+                result['imports'].append({
+                    'line': stripped,
+                    'modules': self._extract_imported_modules(stripped)
+                })
             
             # Parse inheritance for this specific module
             if f"module {module_name} from " in stripped or f"interface {module_name} from " in stripped:
@@ -230,6 +387,51 @@ class DocGenerator:
                     result['parent_module'] = parent
         
         return result
+    
+    def _extract_imported_modules(self, import_line: str) -> List[str]:
+        """Extract module names from import statements."""
+        modules = []
+        
+        if import_line.startswith('from '):
+            # from "path" import Module1, Module2
+            if ' import ' in import_line:
+                import_part = import_line.split(' import ', 1)[1]
+                module_names = [name.strip() for name in import_part.split(',')]
+                modules.extend(module_names)
+        elif import_line.startswith('import '):
+            # import Module1, Module2
+            import_part = import_line[7:]  # Remove 'import '
+            module_names = [name.strip() for name in import_part.split(',')]
+            modules.extend(module_names)
+            
+        return modules
+    
+    def _make_imports_clickable(self, imports: List[Dict]) -> List[Dict]:
+        """Make import statements clickable by linking to known modules."""
+        # Create a lookup of module names to their paths
+        module_lookup = {}
+        for module in self.modules:
+            module_lookup[module['name']] = module.get('path', '')
+            
+        clickable_imports = []
+        for import_info in imports:
+            clickable_line = import_info['line']
+            
+            # Replace module names with links if they exist
+            for module_name in import_info['modules']:
+                if module_name in module_lookup and module_lookup[module_name]:
+                    link = f'<a href="/module/{module_lookup[module_name]}" class="import-link">{module_name}</a>'
+                    # Replace the module name in the line (be careful with partial matches)
+                    pattern = r'\b' + re.escape(module_name) + r'\b'
+                    clickable_line = re.sub(pattern, link, clickable_line)
+                    
+            clickable_imports.append({
+                'line': import_info['line'],
+                'clickable_line': clickable_line,
+                'modules': import_info['modules']
+            })
+            
+        return clickable_imports
     
     def _build_inheritance_chains(self):
         """Build inheritance chains and used_by relationships after all modules are loaded."""

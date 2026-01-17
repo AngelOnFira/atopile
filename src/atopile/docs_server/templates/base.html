@@ -43,7 +43,7 @@
                     <div class="nav-category">
                         <h4 class="category-header">📦 Dependencies</h4>
                         <ul class="module-list collapsible">
-                            {% for module in organized_modules.dependencies[:10] %}
+                            {% for module in organized_modules.dependencies %}
                             <li>
                                 <a href="/module/{{ module.path }}" class="{% if module.path == current_module %}active{% endif %}">
                                     <span class="module-icon">{{ module.icon }}</span>
@@ -51,9 +51,6 @@
                                 </a>
                             </li>
                             {% endfor %}
-                            {% if organized_modules.dependencies|length > 10 %}
-                            <li class="show-more">+ {{ organized_modules.dependencies|length - 10 }} more...</li>
-                            {% endif %}
                         </ul>
                     </div>
                     {% endif %}
