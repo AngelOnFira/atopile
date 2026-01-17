@@ -1,0 +1,15 @@
+[package]
+name = "ato-export"
+description = "Export formats for the Ato electronics compiler (netlist, BOM)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ato-ir = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]

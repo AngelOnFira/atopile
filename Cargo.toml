@@ -30,3 +30,4 @@ ato-ir = { path = "crates/ato-ir" }
 ato-sema = { path = "crates/ato-sema" }
 ato-cli = { path = "crates/ato-cli" }
 ato-parts = { path = "crates/ato-parts" }
+ato-export = { path = "crates/ato-export" }

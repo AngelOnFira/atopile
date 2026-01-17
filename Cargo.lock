@@ -133,6 +133,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ato-export"
+version = "0.1.0"
+dependencies = [
+ "ato-ir",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "ato-ir"
 version = "0.1.0"
 dependencies = [
