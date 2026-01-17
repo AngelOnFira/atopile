@@ -5,6 +5,9 @@ import Electrical
 
 module Resistor:
     unnamed = new Electrical[2]
+    # Alternative pin names for compatibility
+    p1 = new Electrical
+    p2 = new Electrical
     resistance: ohm
     max_power: W
     max_voltage: V

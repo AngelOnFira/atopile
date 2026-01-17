@@ -306,7 +306,7 @@ impl Analyzer {
         &mut self,
         path: &Path,
         import_name: &str,
-        _resolver: &mut Resolver,
+        resolver: &mut Resolver,
         design: &mut Design,
         scope: &mut Scope,
     ) {
@@ -315,8 +315,10 @@ impl Analyzer {
             // Find the specific symbol we're importing
             for (name, kind) in cached {
                 if name == import_name {
-                    // Create module in design and add to scope
-                    let module_id = design.create_module(name, *kind);
+                    // Reuse existing module if it exists, otherwise create new
+                    let module_id = design.find_module(name).unwrap_or_else(|| {
+                        design.create_module(name, *kind)
+                    });
                     scope.define_module(name, module_id, None);
                     return;
                 }
@@ -346,6 +348,11 @@ impl Analyzer {
             }
         };
 
+        // First, resolve imports in this file (transitive imports)
+        // Create a local scope for the imported file
+        let mut import_scope = Scope::new();
+        self.resolve_and_merge_imports(&ast, path, resolver, design, &mut import_scope);
+
         // Extract all top-level definitions (exports)
         let mut exports = Vec::new();
         for stmt in &ast.statements {
@@ -362,8 +369,8 @@ impl Analyzer {
                     let module_id = design.create_module(&block.name.name, kind);
                     scope.define_module(&block.name.name, module_id, Some(block.span));
 
-                    // Also analyze the imported module's body to populate fields
-                    self.analyze_imported_module(&ast, &block.name.name, module_id, design);
+                    // Analyze the imported module's body with its import scope
+                    self.analyze_imported_module_with_scope(&ast, &block.name.name, module_id, design, &import_scope);
                 }
             }
         }
@@ -372,13 +379,26 @@ impl Analyzer {
         self.file_cache.insert(path.to_path_buf(), exports);
     }
 
-    /// Analyze an imported module to populate its fields.
+    /// Analyze an imported module to populate its fields (legacy, no scope).
+    #[allow(dead_code)]
     fn analyze_imported_module(
         &mut self,
         ast: &File,
         module_name: &str,
         module_id: ato_ir::ModuleId,
         design: &mut Design,
+    ) {
+        self.analyze_imported_module_with_scope(ast, module_name, module_id, design, &Scope::new());
+    }
+
+    /// Analyze an imported module to populate its fields, using a scope for type resolution.
+    fn analyze_imported_module_with_scope(
+        &mut self,
+        ast: &File,
+        module_name: &str,
+        module_id: ato_ir::ModuleId,
+        design: &mut Design,
+        scope: &Scope,
     ) {
         // Find the module definition
         for stmt in &ast.statements {
@@ -415,13 +435,27 @@ impl Analyzer {
                                                 .iter()
                                                 .map(|p| p.name.clone())
                                                 .collect::<Vec<_>>();
-                                            let qname = ato_ir::QualifiedName::new(type_name);
+                                            let qname = ato_ir::QualifiedName::new(type_name.clone());
                                             let count = new_expr.count.as_ref()
                                                 .and_then(|c| c.value.parse().ok());
-                                            let kind = if count.is_some() {
-                                                ato_ir::FieldKind::instance_array(qname, count.unwrap())
+
+                                            // Try to resolve the type from scope
+                                            let resolved_type = type_name.last()
+                                                .and_then(|n| scope.lookup(n))
+                                                .and_then(|b| b.as_module());
+
+                                            let kind = if let Some(count) = count {
+                                                ato_ir::FieldKind::Instance {
+                                                    type_ref: qname,
+                                                    count: Some(count),
+                                                    resolved_type,
+                                                }
                                             } else {
-                                                ato_ir::FieldKind::instance(qname)
+                                                ato_ir::FieldKind::Instance {
+                                                    type_ref: qname,
+                                                    count: None,
+                                                    resolved_type,
+                                                }
                                             };
                                             design.add_field(module_id, &name, kind);
                                         }
