@@ -15,19 +15,18 @@ Full rewrite of atopile in Rust - standalone compiler with **no Python dependenc
 | `ato-cli` | ✅ Complete | Main compiler CLI with solver integration |
 | `ato-tests` | ✅ Complete | E2E test suite (227 tests) |
 | `ato-parts` | ✅ Complete | Part database interface |
-| `ato-export` | ✅ Complete | Netlist generation (KiCad format) |
-| BOM generation | 🔲 Not Started | Bill of materials output |
+| `ato-export` | ✅ Complete | Netlist + BOM generation |
 | KiCad project | 🔲 Not Started | Full KiCad project output |
 
 ---
 
 ## Feature Parity Status
 
-**Completed**: Parsing, semantic analysis, import resolution, constraint solving, part queries, netlist export
+**Completed**: Parsing, semantic analysis, import resolution, constraint solving, part queries, netlist export, BOM generation
 
-**Remaining**: BOM generation, full KiCad project output
+**Remaining**: Full KiCad project output (schematic, PCB, libraries)
 
-Estimated: **~85% of core functionality complete**
+Estimated: **~90% of core functionality complete**
 
 ---
 
@@ -60,30 +59,15 @@ Estimated: **~85% of core functionality complete**
 - **Query builders**: ResistorQuery, CapacitorQuery with parameter constraints
 - **Selection**: BasicPartSelector with scoring strategies
 
-### Phase 8: Output Generation (Partial) ✅
-- **ato-export crate**: Netlist/Net/NetNode/NetlistComponent types
-- **NetlistBuilder**: Builds netlist from IR Design
-- **KiCad export**: S-expression netlist format (.net files)
+### Phase 8: Output Generation ✅
+- **Netlist**: NetlistBuilder from IR Design, KiCad S-expression format
+- **BOM**: JLCPCB CSV format, generic CSV format
+- **Component grouping**: Identical parts grouped with quantities
+- **Designator sorting**: Proper numeric ordering (R1, R2, R10)
 
 ---
 
 ## Remaining Work
-
-### Prompt 19: BOM Generation 🔲
-
-Produce Bill of Materials for manufacturing.
-
-**Requirements**:
-1. JLCPCB BOM format (CSV)
-2. Generic BOM format
-3. Include part numbers, quantities, values
-4. Group identical components
-
-**Reference**: `src/faebryk/exporters/bom/`
-
-**Completion**: `<promise>BOM_GENERATION_COMPLETE</promise>`
-
----
 
 ### Prompt 20: KiCad Project Output 🔲
 
@@ -114,7 +98,7 @@ crates/
 ├── ato-cli/        # ✅ Main compiler binary + solver integration
 ├── ato-tests/      # ✅ E2E test suite
 ├── ato-parts/      # ✅ Part database interface
-└── ato-export/     # ✅ Netlist/KiCad export
+└── ato-export/     # ✅ Netlist + BOM export
 ```
 
 ---
@@ -134,10 +118,9 @@ insta = "1"          # Snapshot testing
 
 ---
 
-## Next Steps (Priority Order)
+## Next Steps
 
-1. 🔲 **BOM generation** (Prompt 19) - Manufacturing output
-2. 🔲 **KiCad project** (Prompt 20) - Full design output
+1. 🔲 **KiCad project** (Prompt 20) - Full design output
 
 ---
 
