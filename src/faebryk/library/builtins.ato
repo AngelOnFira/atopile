@@ -1,0 +1,69 @@
+# Built-in types for the Ato language
+# These are the core types that are always available via `import`
+
+interface Electrical:
+    """Basic electrical connection point."""
+    pass
+
+interface ElectricPower:
+    """Power supply interface with high and low voltage rails."""
+    hv = new Electrical
+    lv = new Electrical
+    # Alias for backwards compatibility
+    vcc = new Electrical
+    gnd = new Electrical
+
+interface ElectricLogic:
+    """Logic signal with reference."""
+    line = new Electrical
+    reference = new ElectricPower
+
+interface ElectricSignal:
+    """Analog signal with voltage reference."""
+    line = new Electrical
+    reference = new ElectricPower
+    voltage: V
+
+module Resistor:
+    """A resistor component."""
+    resistance: ohm
+    max_power: W
+    max_voltage: V
+    package: dimensionless
+    p1 = new Electrical
+    p2 = new Electrical
+
+module Capacitor:
+    """A capacitor component."""
+    capacitance: F
+    max_voltage: V
+    package: dimensionless
+    p1 = new Electrical
+    p2 = new Electrical
+
+module Inductor:
+    """An inductor component."""
+    inductance: H
+    max_current: A
+    p1 = new Electrical
+    p2 = new Electrical
+
+interface I2C:
+    """I2C bus interface."""
+    scl = new ElectricLogic
+    sda = new ElectricLogic
+    frequency: Hz
+    address: dimensionless
+
+interface SPI:
+    """SPI bus interface."""
+    sclk = new ElectricLogic
+    mosi = new ElectricLogic
+    miso = new ElectricLogic
+    cs = new ElectricLogic
+
+interface UART:
+    """UART serial interface."""
+    tx = new ElectricLogic
+    rx = new ElectricLogic
+    baudrate: Hz

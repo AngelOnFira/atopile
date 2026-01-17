@@ -7,22 +7,29 @@
 //! 4. AST to IR lowering
 
 use crate::error::SemaError;
-use crate::imports::ImportResolver;
 use crate::lower::Lowerer;
 use crate::names::NameResolver;
+use crate::resolution::{ResolutionConfig, Resolver};
 use crate::scope::Scope;
 use crate::types::TypeChecker;
-use ato_ir::Design;
-use ato_parser::File;
-use std::path::Path;
+use ato_ir::{Design, ModuleKind};
+use ato_parser::{File, Statement};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 /// The main analyzer for semantic analysis.
 pub struct Analyzer {
     /// The root directory for import resolution.
-    root_dir: Option<std::path::PathBuf>,
+    root_dir: Option<PathBuf>,
+
+    /// The standard library path.
+    stdlib_path: Option<PathBuf>,
 
     /// Collected errors from all phases.
     errors: Vec<SemaError>,
+
+    /// Cache of analyzed files (path -> modules defined).
+    file_cache: HashMap<PathBuf, Vec<(String, ModuleKind)>>,
 }
 
 impl Default for Analyzer {
@@ -36,13 +43,21 @@ impl Analyzer {
     pub fn new() -> Self {
         Self {
             root_dir: None,
+            stdlib_path: None,
             errors: Vec::new(),
+            file_cache: HashMap::new(),
         }
     }
 
     /// Set the root directory for import resolution.
-    pub fn with_root_dir(mut self, root_dir: impl Into<std::path::PathBuf>) -> Self {
+    pub fn with_root_dir(mut self, root_dir: impl Into<PathBuf>) -> Self {
         self.root_dir = Some(root_dir.into());
+        self
+    }
+
+    /// Set the standard library path.
+    pub fn with_stdlib(mut self, stdlib_path: impl Into<PathBuf>) -> Self {
+        self.stdlib_path = Some(stdlib_path.into());
         self
     }
 
@@ -112,17 +127,23 @@ impl Analyzer {
     /// Analyze a file with import resolution.
     pub fn analyze_file(&mut self, source: &str, file_path: &Path) -> Result<Design, Vec<SemaError>> {
         self.errors.clear();
+        self.file_cache.clear();
 
         let root_dir = self.root_dir.clone()
             .or_else(|| file_path.parent().map(|p| p.to_path_buf()))
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
 
-        // Phase 0: Import resolution
-        let mut import_resolver = ImportResolver::new(root_dir);
-        if let Err(errors) = import_resolver.resolve(source, Some(file_path)) {
+        // Setup resolution config
+        let mut config = ResolutionConfig::new(&root_dir);
+        if let Some(ref stdlib) = self.stdlib_path {
+            config = config.with_stdlib(stdlib);
+        }
+
+        // Create resolver and index stdlib
+        let mut resolver = Resolver::new(config);
+        if let Err(errors) = resolver.index_stdlib() {
             self.errors.extend(errors);
         }
-        self.errors.extend(import_resolver.take_errors());
 
         // Parse the main file
         let ast = match ato_parser::parse(source) {
@@ -137,12 +158,12 @@ impl Analyzer {
             }
         };
 
-        // Continue with regular analysis
+        // Create design and scope
         let mut design = Design::new();
         let mut scope = Scope::new();
 
-        // Register imported modules in scope
-        // (In a full implementation, we'd process all imported files here)
+        // Phase 0: Resolve imports and merge symbols into scope
+        self.resolve_and_merge_imports(&ast, file_path, &mut resolver, &mut design, &mut scope);
 
         // Phase 1: Name resolution
         let mut name_resolver = NameResolver::new(&mut design);
@@ -172,6 +193,247 @@ impl Analyzer {
             Ok(design)
         } else {
             Err(std::mem::take(&mut self.errors))
+        }
+    }
+
+    /// Resolve imports and merge their symbols into scope.
+    fn resolve_and_merge_imports(
+        &mut self,
+        ast: &File,
+        current_file: &Path,
+        resolver: &mut Resolver,
+        design: &mut Design,
+        scope: &mut Scope,
+    ) {
+        // Extract imports from the AST
+        for stmt in &ast.statements {
+            match stmt {
+                Statement::Import(import) => {
+                    let from_path = import.from_path.as_ref().map(|s| {
+                        // Strip quotes from the path
+                        let v = &s.value;
+                        if (v.starts_with('"') && v.ends_with('"')) ||
+                           (v.starts_with('\'') && v.ends_with('\'')) {
+                            v[1..v.len()-1].to_string()
+                        } else {
+                            v.clone()
+                        }
+                    });
+
+                    for type_ref in &import.imports {
+                        let name = type_ref.parts.last()
+                            .map(|p| p.name.clone())
+                            .unwrap_or_default();
+
+                        self.resolve_single_import(
+                            &name,
+                            from_path.as_deref(),
+                            current_file,
+                            resolver,
+                            design,
+                            scope,
+                            Some(import.span),
+                        );
+                    }
+                }
+                Statement::DepImport(import) => {
+                    let name = import.type_ref.parts.last()
+                        .map(|p| p.name.clone())
+                        .unwrap_or_default();
+
+                    let from_path = {
+                        let v = &import.from_path.value;
+                        if (v.starts_with('"') && v.ends_with('"')) ||
+                           (v.starts_with('\'') && v.ends_with('\'')) {
+                            v[1..v.len()-1].to_string()
+                        } else {
+                            v.clone()
+                        }
+                    };
+
+                    self.resolve_single_import(
+                        &name,
+                        Some(&from_path),
+                        current_file,
+                        resolver,
+                        design,
+                        scope,
+                        Some(import.span),
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Resolve a single import and add it to scope.
+    fn resolve_single_import(
+        &mut self,
+        name: &str,
+        from_path: Option<&str>,
+        current_file: &Path,
+        resolver: &mut Resolver,
+        design: &mut Design,
+        scope: &mut Scope,
+        span: Option<ato_lexer::Span>,
+    ) {
+        // Try to resolve the import
+        let resolved_path = if let Some(path) = from_path {
+            // `from "path" import Name` - resolve the path
+            match resolver.resolve_path_import(path, current_file) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    self.errors.push(e);
+                    return;
+                }
+            }
+        } else {
+            // `import Name` - try to find in stdlib/registry
+            resolver.resolve_simple_import(name)
+        };
+
+        if let Some(resolved_path) = resolved_path {
+            // Load and parse the imported file
+            self.load_and_merge_file(&resolved_path, name, resolver, design, scope);
+        } else {
+            // Could not resolve - report error
+            self.errors.push(SemaError::unresolved_import(name, span));
+        }
+    }
+
+    /// Load a file and merge its exports into scope.
+    fn load_and_merge_file(
+        &mut self,
+        path: &Path,
+        import_name: &str,
+        _resolver: &mut Resolver,
+        design: &mut Design,
+        scope: &mut Scope,
+    ) {
+        // Check cache
+        if let Some(cached) = self.file_cache.get(path) {
+            // Find the specific symbol we're importing
+            for (name, kind) in cached {
+                if name == import_name {
+                    // Create module in design and add to scope
+                    let module_id = design.create_module(name, *kind);
+                    scope.define_module(name, module_id, None);
+                    return;
+                }
+            }
+            return;
+        }
+
+        // Read and parse the file
+        let source = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => {
+                self.errors.push(SemaError::IoError {
+                    message: format!("failed to read '{}': {}", path.display(), e),
+                });
+                return;
+            }
+        };
+
+        let ast = match ato_parser::parse(&source) {
+            Ok(ast) => ast,
+            Err(errors) => {
+                self.errors.push(SemaError::ParseError {
+                    file: path.display().to_string(),
+                    message: errors.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; "),
+                });
+                return;
+            }
+        };
+
+        // Extract all top-level definitions (exports)
+        let mut exports = Vec::new();
+        for stmt in &ast.statements {
+            if let Statement::BlockDef(block) = stmt {
+                let kind = match block.kind {
+                    ato_parser::BlockKind::Module => ModuleKind::Module,
+                    ato_parser::BlockKind::Interface => ModuleKind::Interface,
+                    ato_parser::BlockKind::Component => ModuleKind::Component,
+                };
+                exports.push((block.name.name.clone(), kind));
+
+                // If this is the symbol we're importing, add it to scope
+                if block.name.name == import_name {
+                    let module_id = design.create_module(&block.name.name, kind);
+                    scope.define_module(&block.name.name, module_id, Some(block.span));
+
+                    // Also analyze the imported module's body to populate fields
+                    self.analyze_imported_module(&ast, &block.name.name, module_id, design);
+                }
+            }
+        }
+
+        // Cache the exports
+        self.file_cache.insert(path.to_path_buf(), exports);
+    }
+
+    /// Analyze an imported module to populate its fields.
+    fn analyze_imported_module(
+        &mut self,
+        ast: &File,
+        module_name: &str,
+        module_id: ato_ir::ModuleId,
+        design: &mut Design,
+    ) {
+        // Find the module definition
+        for stmt in &ast.statements {
+            if let Statement::BlockDef(block) = stmt {
+                if block.name.name == module_name {
+                    // Process the module's body to extract fields
+                    for body_stmt in &block.body {
+                        match body_stmt {
+                            Statement::PinDeclaration(pin) => {
+                                let name = match &pin.name {
+                                    ato_parser::PinName::Identifier(id) => id.name.clone(),
+                                    ato_parser::PinName::Number(n) => n.value.clone(),
+                                    ato_parser::PinName::String(s) => s.value.clone(),
+                                };
+                                design.add_field(module_id, &name, ato_ir::FieldKind::pin(&name));
+                            }
+                            Statement::SignalDef(signal) => {
+                                design.add_field(module_id, &signal.name.name, ato_ir::FieldKind::signal());
+                            }
+                            Statement::Declaration(decl) => {
+                                let name = decl.field.parts.first()
+                                    .map(|p| p.name.name.clone())
+                                    .unwrap_or_default();
+                                let kind = ato_ir::FieldKind::parameter_with_unit(&decl.type_info.name);
+                                design.add_field(module_id, &name, kind);
+                            }
+                            Statement::Assignment(assign) => {
+                                // Handle field assignments like `p1 = new Electrical`
+                                if let ato_parser::AssignTarget::FieldRef(field_ref) = &assign.target {
+                                    if field_ref.parts.len() == 1 {
+                                        let name = field_ref.parts[0].name.name.clone();
+                                        if let ato_parser::Assignable::New(new_expr) = &assign.value {
+                                            let type_name = new_expr.type_ref.parts
+                                                .iter()
+                                                .map(|p| p.name.clone())
+                                                .collect::<Vec<_>>();
+                                            let qname = ato_ir::QualifiedName::new(type_name);
+                                            let count = new_expr.count.as_ref()
+                                                .and_then(|c| c.value.parse().ok());
+                                            let kind = if count.is_some() {
+                                                ato_ir::FieldKind::instance_array(qname, count.unwrap())
+                                            } else {
+                                                ato_ir::FieldKind::instance(qname)
+                                            };
+                                            design.add_field(module_id, &name, kind);
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    break;
+                }
+            }
         }
     }
 

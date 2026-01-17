@@ -3,10 +3,34 @@
 //! This command parses a .ato file and runs semantic analysis to
 //! catch errors without generating build artifacts.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::error::{CliError, CliResult, SemanticErrorInfo, read_file};
 use ato_sema::{Analyzer, SemaError};
+
+/// Find the stdlib path by looking for src/faebryk/library relative to the project.
+fn find_stdlib_path(file_path: &Path) -> Option<PathBuf> {
+    // Try to find the stdlib by walking up from the file path
+    let mut current = file_path.parent()?;
+
+    for _ in 0..10 {  // Don't go up more than 10 levels
+        // Check for src/faebryk/library
+        let stdlib = current.join("src/faebryk/library");
+        if stdlib.exists() {
+            return Some(stdlib);
+        }
+
+        // Also check if we're already in the atopile repo
+        let stdlib = current.join("../src/faebryk/library");
+        if stdlib.exists() {
+            return Some(stdlib.canonicalize().ok()?);
+        }
+
+        current = current.parent()?;
+    }
+
+    None
+}
 
 /// Run the check command.
 pub fn run(path: &Path, verbose: bool) -> CliResult<()> {
@@ -26,8 +50,16 @@ pub fn run(path: &Path, verbose: bool) -> CliResult<()> {
         println!("Checking {}...", file_name);
     }
 
-    // Run semantic analysis
+    // Setup analyzer with stdlib if found
     let mut analyzer = Analyzer::new();
+    if let Some(stdlib_path) = find_stdlib_path(path) {
+        if verbose {
+            println!("  Using stdlib: {}", stdlib_path.display());
+        }
+        analyzer = analyzer.with_stdlib(stdlib_path);
+    }
+
+    // Run semantic analysis
     match analyzer.analyze_file(&source, path) {
         Ok(design) => {
             if verbose {
