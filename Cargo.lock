@@ -168,6 +168,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ato-parts"
+version = "0.1.0"
+dependencies = [
+ "ato-domain",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "ato-sema"
 version = "0.1.0"
 dependencies = [
