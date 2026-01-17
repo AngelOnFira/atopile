@@ -12,7 +12,7 @@ This is NOT an incremental migration - we are building a completely new Rust too
 | `ato-parser` | ✅ Complete | AST generation with chumsky (error recovery) |
 | `ato-domain` | ✅ Complete | Quantity/interval/set types |
 | `ato-solver` | ✅ Complete | Constraint solver with simplification |
-| `ato-ir` | 🔲 Not started | Intermediate representation |
+| `ato-ir` | ✅ Complete | Intermediate representation |
 | `ato-sema` | 🔲 Not started | Semantic analysis |
 | `ato-cli` | 🔲 Not started | Main compiler CLI |
 
@@ -42,7 +42,7 @@ This is NOT an incremental migration - we are building a completely new Rust too
 
 ---
 
-## Phase 0: Codebase Cleanup 🔲 TODO
+## Phase 0: Codebase Cleanup ✅ COMPLETE
 
 Before proceeding with new development, clean up dead code from earlier experimentation:
 
@@ -370,7 +370,7 @@ crates/
 ├── ato-parser/         # ✅ Parsing → AST (chumsky-based, error recovery)
 ├── ato-domain/         # ✅ Quantity/interval/set types
 ├── ato-solver/         # ✅ Constraint solver with simplification
-├── ato-ir/             # 🔲 Intermediate representation (design graph)
+├── ato-ir/             # ✅ Intermediate representation (design graph)
 ├── ato-sema/           # 🔲 Semantic analysis (name resolution, type checking)
 └── ato-cli/            # 🔲 Main compiler binary (orchestrates everything)
 
@@ -443,8 +443,8 @@ insta = "1"              # Snapshot testing
 4. ✅ ~~Create ato-solver~~ - Constraint solver
 
 ### Up Next (in order)
-5. 🔲 **Cleanup** - Remove ato-py, consolidate parser to chumsky only
-6. 🔲 **Create ato-ir** - Intermediate representation for designs
+5. ✅ ~~Cleanup~~ - Remove ato-py, consolidate parser to chumsky only
+6. ✅ ~~Create ato-ir~~ - Intermediate representation for designs
 7. 🔲 **Create ato-sema** - Semantic analysis (imports, names, types)
 8. 🔲 **Create ato-cli** - Main `ato` binary that ties everything together
 9. 🔲 **E2E tests** - Comprehensive test suite validating full pipeline
