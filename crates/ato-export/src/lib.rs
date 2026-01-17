@@ -7,6 +7,7 @@
 //!
 //! - **Netlist**: Generic netlist representation
 //! - **KiCad Netlist**: KiCad-compatible netlist format (.net)
+//! - **KiCad Project**: Complete KiCad project files (.kicad_pro, .kicad_sch, .kicad_pcb)
 //! - **BOM**: Bill of Materials in JLCPCB and generic CSV formats
 //!
 //! # Example
@@ -39,6 +40,9 @@
 pub mod netlist;
 pub mod kicad;
 pub mod bom;
+pub mod kicad_project;
+pub mod kicad_schematic;
+pub mod kicad_pcb;
 
 pub use netlist::{
     Net,
@@ -64,6 +68,35 @@ pub use bom::{
     BomExporter,
     BomFormat,
     BomLine,
+};
+
+pub use kicad_project::{
+    KicadProject,
+    BoardSettings,
+    DesignSettings,
+    NetSettings,
+    NetClass,
+    PcbnewSettings,
+    SchematicSettings,
+};
+
+pub use kicad_schematic::{
+    KicadSchematic,
+    SchematicSymbol,
+    Wire,
+    Label,
+    TitleBlock,
+};
+
+pub use kicad_pcb::{
+    KicadPcb,
+    Footprint,
+    Pad,
+    Track,
+    Via,
+    Zone,
+    Graphic,
+    PcbNet,
 };
 
 use thiserror::Error;
@@ -101,6 +134,9 @@ pub mod prelude {
         ExportError,
         ExportResult,
         KicadNetlistExporter,
+        KicadPcb,
+        KicadProject,
+        KicadSchematic,
         Net,
         NetNode,
         Netlist,
