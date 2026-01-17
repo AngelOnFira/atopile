@@ -15,6 +15,7 @@ This is NOT an incremental migration - we are building a completely new Rust too
 | `ato-ir` | ✅ Complete | Intermediate representation |
 | `ato-sema` | ✅ Complete | Semantic analysis |
 | `ato-cli` | ✅ Complete | Main compiler CLI |
+| `ato-tests` | ✅ Complete | E2E test suite (110 tests) |
 
 ---
 
@@ -248,7 +249,7 @@ Lower parsed AST to IR with full semantic checking.
 
 ---
 
-## Phase 4: CLI and End-to-End Testing 🔲 IN PROGRESS
+## Phase 4: CLI and End-to-End Testing ✅ COMPLETE
 
 ### Prompt 7: CLI Foundation ✅
 
@@ -285,7 +286,7 @@ Create the main `ato` binary that orchestrates compilation.
 ## Completion: CLI_COMPLETE ✅
 ```
 
-### Prompt 8: End-to-End Test Suite
+### Prompt 8: End-to-End Test Suite ✅
 
 ```markdown
 # Task: Create End-to-End Test Suite
@@ -317,15 +318,11 @@ Build a comprehensive test suite that validates the full compiler pipeline.
 - Comparison with Python implementation output
 
 ## Structure
-- `tests/` directory at workspace root
-- `tests/harness.rs` - Common test utilities
+- `crates/ato-tests/` - Test crate with fixtures and tests
+- `crates/ato-tests/src/harness.rs` - Common test utilities
 - Snapshot testing with `insta` crate
 
-## Completion Criteria
-Output <promise>E2E_TESTS_COMPLETE</promise> when:
-- 50+ test cases covering major features
-- All example projects pass
-- CI runs tests on every commit
+## Completion: E2E_TESTS_COMPLETE ✅
 ```
 
 ---
@@ -363,13 +360,14 @@ crates/
 ├── ato-solver/         # ✅ Constraint solver with simplification
 ├── ato-ir/             # ✅ Intermediate representation (design graph)
 ├── ato-sema/           # ✅ Semantic analysis (name resolution, type checking)
-└── ato-cli/            # ✅ Main compiler binary (orchestrates everything)
-
-tests/
-├── parse/              # Parser golden tests
-├── sema/               # Semantic analysis tests
-├── solver/             # Constraint solver tests
-└── integration/        # Full pipeline tests (CLI end-to-end)
+├── ato-cli/            # ✅ Main compiler binary (orchestrates everything)
+└── ato-tests/          # ✅ E2E test suite (110 tests)
+    ├── fixtures/       # Test fixture .ato files
+    │   ├── parse/      # Parser test fixtures
+    │   ├── sema/       # Semantic analysis fixtures
+    │   ├── solver/     # Solver test fixtures
+    │   └── integration/# Integration test fixtures
+    └── tests/          # Test implementations
 ```
 
 **Note**: `ato-py` (Python bindings) should be deleted - it was for incremental migration which we're not doing.
@@ -438,7 +436,7 @@ insta = "1"              # Snapshot testing
 6. ✅ ~~Create ato-ir~~ - Intermediate representation for designs
 7. ✅ ~~Create ato-sema~~ - Semantic analysis (imports, names, types)
 8. ✅ ~~Create ato-cli~~ - Main `ato` binary that ties everything together
-9. 🔲 **E2E tests** - Comprehensive test suite validating full pipeline
+9. ✅ ~~E2E tests~~ - Comprehensive test suite validating full pipeline (110 tests)
 10. 🔲 **Output generation** - KiCad, BOM, netlist (future)
 
 ---
