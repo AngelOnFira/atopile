@@ -214,3 +214,5 @@ CLAUDE.md
 **/~*.kicad_pcb.lck
 **/~_autosave-*.kicad_pcb.lck
 **/fp-info-cache
+.docs/
+examples/espaper/

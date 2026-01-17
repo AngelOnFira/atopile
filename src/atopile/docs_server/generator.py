@@ -18,6 +18,7 @@ except ImportError:
 
 from atopile import front_end
 from atopile.datatypes import TypeRef
+import faebryk.libs.library.L as L
 
 logger = logging.getLogger(__name__)
 
@@ -99,16 +100,28 @@ class DocGenerator:
                     
             except Exception as e:
                 logger.warning(f"Failed to parse {relative_path}: {e}")
-                # Fall back to basic parsing
-                self._extract_basic_modules(ato_file, relative_path)
+                # Skip files that can't be parsed
+                file_info = {
+                    'path': str(relative_path),
+                    'module_count': 0
+                }
+                self.files.append(file_info)
                 
     def _extract_module_data(self, file_path: Path, ref: TypeRef, node) -> Dict[str, Any]:
-        """Extract module data for documentation."""
+        """Extract module data for documentation from faebryk node."""
+        # Determine module type
+        module_type = 'Module'
+        if hasattr(L, 'ModuleInterface') and isinstance(node, L.ModuleInterface):
+            module_type = 'Interface'
+        elif hasattr(L, 'Module') and isinstance(node, L.Module):
+            # Check if it's labeled as component in the source
+            module_type = 'Module'
+        
         # Basic info
         data = {
             'name': str(ref),
-            'type': type(node).__name__.replace('_driver', '').title(),
-            'icon': self._get_icon_for_type(type(node).__name__),
+            'type': module_type,
+            'icon': self._get_icon_for_type(module_type),
             'docstring': None,
             'pins': [],
             'signals': [],
@@ -117,23 +130,80 @@ class DocGenerator:
             'connections': [],
             'assertions': [],
             'source_code': None,
-            'parent_module': None,       # Direct parent from 'from X' syntax
-            'inheritance_chain': [],     # Full chain of inheritance
-            'imports': [],              # Import statements used
-            'used_by': []              # Modules that inherit from this one
+            'parent_module': None,
+            'inheritance_chain': [],
+            'imports': [],
+            'used_by': []
         }
         
-        # Try to get source code snippet and inheritance info
+        # Extract information from the node
+        try:
+            # Get all direct children
+            from faebryk.core.parameter import Parameter
+            from faebryk.core.moduleinterface import ModuleInterface
+            
+            # Extract parameters
+            for child in node.get_children(direct_only=True, types=Parameter):
+                param_name = child.get_name()
+                data['parameters'].append({
+                    'name': param_name,
+                    'type': 'Parameter',
+                    'value': None,  # Would need solver to get value
+                    'line': f"{param_name}: Parameter"
+                })
+            
+            # Extract module interfaces (pins/signals)
+            for child in node.get_children(direct_only=True, types=ModuleInterface):
+                child_name = child.get_name()
+                # Determine if it's a pin or signal based on naming or type
+                data['pins'].append({
+                    'name': child_name,
+                    'line': f"pin {child_name}"
+                })
+            
+            # Extract sub-modules (instances)
+            for child in node.get_children(direct_only=True, types=L.Module):
+                child_name = child.get_name()
+                child_type = type(child).__name__
+                data['instances'].append({
+                    'name': child_name,
+                    'type': child_type,
+                    'array_size': None,
+                    'template_params': None,
+                    'line': f"{child_name} = new {child_type}"
+                })
+            
+            # Get inheritance information from specialization
+            if hasattr(node, 'specializes') and node.specializes:
+                # Get the parent module from specialization graph
+                specializes_edges = node.specializes.get_gif_edges()
+                for edge in specializes_edges:
+                    parent_node = edge.node
+                    if parent_node and parent_node != node:
+                        # Try to find the parent's reference name
+                        data['parent_module'] = type(parent_node).__name__
+                        break
+        except Exception as e:
+            logger.debug(f"Error extracting node data: {e}")
+        
+        # Get source code and imports from file
         try:
             with open(file_path, 'r') as f:
                 content = f.read()
-                # Parse inheritance and imports
-                data.update(self._parse_file_metadata(content, str(ref)))
                 
-                # Extract and format source code
+                # Extract imports
                 lines = content.split('\n')
+                for line in lines:
+                    stripped = line.strip()
+                    if stripped.startswith('import ') or stripped.startswith('from '):
+                        data['imports'].append({
+                            'line': stripped,
+                            'modules': self._extract_imported_modules(stripped)
+                        })
+                
+                # Extract source code for display
                 for i, line in enumerate(lines):
-                    if f"module {ref}" in line or f"interface {ref}" in line:
+                    if f"module {ref}" in line or f"interface {ref}" in line or f"component {ref}" in line:
                         # Get the module definition  
                         indent = len(line) - len(line.lstrip())
                         source_lines = [line]
@@ -148,68 +218,17 @@ class DocGenerator:
                         raw_source = '\n'.join(source_lines[:50])
                         data['source_code'] = self._format_source_code(raw_source)
                         
-                        # Parse module contents
-                        data.update(self._parse_module_contents(source_lines))
+                        # Check for inheritance in source
+                        if ' from ' in line:
+                            parts = line.split(' from ')
+                            if len(parts) == 2:
+                                data['parent_module'] = parts[1].rstrip(':').strip()
                         break
         except Exception:
             pass
             
         return data
         
-    def _extract_basic_modules(self, file_path: Path, relative_path: Path):
-        """Extract basic module info when full parsing fails."""
-        try:
-            with open(file_path, 'r') as f:
-                content = f.read()
-                
-            lines = content.split('\n')
-            
-            for i, line in enumerate(lines):
-                stripped = line.strip()
-                if stripped.startswith(('module ', 'interface ', 'component ')):
-                    parts = stripped.split()
-                    if len(parts) >= 2:
-                        block_type = parts[0]
-                        name = parts[1].rstrip(':')
-                        
-                        # Look for docstring
-                        docstring = None
-                        if i + 1 < len(lines):
-                            next_line = lines[i + 1].strip()
-                            if next_line.startswith(('"""', "'''")):
-                                docstring = next_line.strip('"\'')
-                        
-                        # Parse inheritance for this module
-                        parent_module = None
-                        if ' from ' in stripped:
-                            parts = stripped.split(' from ')
-                            if len(parts) == 2:
-                                parent_module = parts[1].rstrip(':').strip()
-                        
-                        module_data = {
-                            'name': name,
-                            'type': block_type.title(),
-                            'icon': self._get_icon_for_type(block_type),
-                            'file_path': str(relative_path),
-                            'path': f"{relative_path.stem}/{name}",
-                            'docstring': docstring,
-                            'pins': [],
-                            'signals': [],
-                            'parameters': [],
-                            'instances': [],
-                            'connections': [],
-                            'assertions': [],
-                            'source_code': None,
-                            'parent_module': parent_module,
-                            'inheritance_chain': [],
-                            'imports': self._parse_file_metadata(content, name)['imports'],
-                            'used_by': []
-                        }
-                        
-                        self.modules.append(module_data)
-                        
-        except Exception as e:
-            logger.error(f"Failed to extract basic modules from {relative_path}: {e}")
             
     def _get_icon_for_type(self, type_name: str) -> str:
         """Get emoji icon for module type."""
@@ -255,138 +274,7 @@ class DocGenerator:
         # Fallback: escape HTML and preserve formatting
         return html.escape(source_code)
     
-    def _parse_module_contents(self, source_lines: List[str]) -> Dict[str, Any]:
-        """Parse module contents to extract pins, signals, parameters, etc."""
-        result = {
-            'pins': [],
-            'signals': [],
-            'parameters': [],
-            'instances': [],
-            'connections': [],
-            'assertions': []
-        }
-        
-        for line in source_lines:
-            stripped = line.strip()
-            if not stripped or stripped.startswith('#') or stripped.startswith('"""') or stripped.startswith("'''"):
-                continue
-                
-            # Parse pins: pin 1, pin "name", pin variable
-            if stripped.startswith('pin '):
-                pin_def = stripped[4:].split('~')[0].strip()  # Remove connections
-                result['pins'].append({
-                    'name': pin_def,
-                    'line': stripped
-                })
-                
-            # Parse signals: signal name ~ pin X
-            elif stripped.startswith('signal '):
-                parts = stripped.split('~')
-                signal_name = parts[0][7:].strip()  # Remove 'signal '
-                connection = parts[1].strip() if len(parts) > 1 else None
-                result['signals'].append({
-                    'name': signal_name,
-                    'connection': connection,
-                    'line': stripped
-                })
-                
-            # Parse parameters: variable = value, variable: type = value
-            elif '=' in stripped and not stripped.startswith(('import ', 'from ', 'assert ', 'module ', 'interface ')):
-                if ' = ' in stripped:
-                    parts = stripped.split(' = ', 1)
-                    param_def = parts[0].strip()
-                    value = parts[1].strip()
-                    
-                    # Check for type annotation
-                    param_type = None
-                    if ':' in param_def:
-                        name_type = param_def.split(':', 1)
-                        param_name = name_type[0].strip()
-                        param_type = name_type[1].strip()
-                    else:
-                        param_name = param_def
-                        
-                    result['parameters'].append({
-                        'name': param_name,
-                        'type': param_type,
-                        'value': value,
-                        'line': stripped
-                    })
-                    
-            # Parse instances: variable = new Type
-            elif ' = new ' in stripped:
-                parts = stripped.split(' = new ', 1)
-                instance_name = parts[0].strip()
-                instance_type = parts[1].strip()
-                
-                # Handle templated types: Type<param=value>
-                if '<' in instance_type:
-                    base_type = instance_type.split('<')[0]
-                    template_params = instance_type[instance_type.find('<')+1:instance_type.rfind('>')]
-                else:
-                    base_type = instance_type
-                    template_params = None
-                    
-                # Handle arrays: Type[count]
-                array_size = None
-                if '[' in base_type:
-                    base_type, array_part = base_type.split('[', 1)
-                    array_size = array_part.rstrip(']')
-                    
-                result['instances'].append({
-                    'name': instance_name,
-                    'type': base_type,
-                    'array_size': array_size,
-                    'template_params': template_params,
-                    'line': stripped
-                })
-                
-            # Parse connections: a ~ b, a ~> b, a <~ b
-            elif any(op in stripped for op in [' ~ ', ' ~> ', ' <~ ']):
-                # Skip signal definitions (already handled above)
-                if not stripped.startswith('signal '):
-                    result['connections'].append({
-                        'line': stripped
-                    })
-                    
-            # Parse assertions: assert condition
-            elif stripped.startswith('assert '):
-                assertion = stripped[7:].strip()  # Remove 'assert '
-                result['assertions'].append({
-                    'condition': assertion,
-                    'line': stripped
-                })
-                
-        return result
     
-    def _parse_file_metadata(self, content: str, module_name: str) -> Dict[str, Any]:
-        """Parse imports and inheritance from file content."""
-        result = {
-            'parent_module': None,
-            'imports': []
-        }
-        
-        lines = content.split('\n')
-        
-        for line in lines:
-            stripped = line.strip()
-            
-            # Parse imports
-            if stripped.startswith('import ') or stripped.startswith('from '):
-                result['imports'].append({
-                    'line': stripped,
-                    'modules': self._extract_imported_modules(stripped)
-                })
-            
-            # Parse inheritance for this specific module
-            if f"module {module_name} from " in stripped or f"interface {module_name} from " in stripped:
-                # Extract parent module name
-                parts = stripped.split(' from ')
-                if len(parts) == 2:
-                    parent = parts[1].rstrip(':').strip()
-                    result['parent_module'] = parent
-        
-        return result
     
     def _extract_imported_modules(self, import_line: str) -> List[str]:
         """Extract module names from import statements."""
