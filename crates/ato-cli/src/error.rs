@@ -37,6 +37,15 @@ pub enum CliError {
         source_code: String,
     },
 
+    /// Constraint solver error.
+    #[error("Solver error in {file}")]
+    Solver {
+        file: String,
+        message: String,
+        span: Option<(usize, usize)>,
+        source_code: String,
+    },
+
     /// Multiple files had errors.
     #[error("Build failed with {count} error(s)")]
     MultipleErrors { count: usize },
@@ -93,6 +102,16 @@ impl CliError {
         }
     }
 
+    /// Create a solver error.
+    pub fn solver(file: impl Into<String>, message: impl Into<String>, span: Option<(usize, usize)>, source_code: String) -> Self {
+        Self::Solver {
+            file: file.into(),
+            message: message.into(),
+            span,
+            source_code,
+        }
+    }
+
     /// Report the error to stderr with nice formatting.
     pub fn report(&self) {
         match self {
@@ -113,6 +132,10 @@ impl CliError {
                     let report = create_semantic_report(file, err, source_code);
                     eprintln!("{:?}", report);
                 }
+            }
+            CliError::Solver { file, message, span, source_code } => {
+                let report = create_solver_report(file, message, *span, source_code);
+                eprintln!("{:?}", report);
             }
             CliError::MultipleErrors { count } => {
                 eprintln!("Error: Build failed with {} error(s)", count);
@@ -155,6 +178,23 @@ struct SemanticDiagnostic {
     help: Option<String>,
 }
 
+/// A diagnostic error for solver failures.
+#[derive(Error, Debug, Diagnostic)]
+#[error("{message}")]
+#[diagnostic(code(ato::solver))]
+struct SolverDiagnostic {
+    message: String,
+
+    #[source_code]
+    src: NamedSource<String>,
+
+    #[label("constraint")]
+    span: Option<SourceSpan>,
+
+    #[help]
+    help: Option<String>,
+}
+
 fn create_parse_report(file: &str, err: &ParseErrorInfo, source_code: &str) -> Report {
     let span = err.span.map(|(start, len)| SourceSpan::from((start, len)));
 
@@ -175,6 +215,18 @@ fn create_semantic_report(file: &str, err: &SemanticErrorInfo, source_code: &str
         src: NamedSource::new(file, source_code.to_string()),
         span,
         help: err.help.clone(),
+    }
+    .into()
+}
+
+fn create_solver_report(file: &str, message: &str, span: Option<(usize, usize)>, source_code: &str) -> Report {
+    let span = span.map(|(start, len)| SourceSpan::from((start, len)));
+
+    SolverDiagnostic {
+        message: message.to_string(),
+        src: NamedSource::new(file, source_code.to_string()),
+        span,
+        help: Some("Check that your constraints are not contradictory".into()),
     }
     .into()
 }

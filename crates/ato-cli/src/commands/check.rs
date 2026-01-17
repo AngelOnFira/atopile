@@ -1,12 +1,14 @@
-//! Check command - semantic analysis without full build.
+//! Check command - semantic analysis and constraint validation.
 //!
 //! This command parses a .ato file and runs semantic analysis to
-//! catch errors without generating build artifacts.
+//! catch errors without generating build artifacts. It also validates
+//! that constraints are satisfiable.
 
 use std::path::{Path, PathBuf};
 
 use crate::error::{CliError, CliResult, SemanticErrorInfo, read_file};
-use ato_sema::{Analyzer, SemaError};
+use ato_sema::{Analyzer, ConstraintCollector, SemaError};
+use ato_solver::SolverError;
 
 /// Find the stdlib path by looking for src/faebryk/library relative to the project.
 fn find_stdlib_path(file_path: &Path) -> Option<PathBuf> {
@@ -60,22 +62,74 @@ pub fn run(path: &Path, verbose: bool) -> CliResult<()> {
     }
 
     // Run semantic analysis
-    match analyzer.analyze_file(&source, path) {
-        Ok(design) => {
-            if verbose {
-                println!("  {} module(s)", design.module_count());
-                println!("  {} field(s)", design.field_count());
-                println!("  {} connection(s)", design.connection_count());
-                println!("  {} constraint(s)", design.constraint_count());
-            }
-            println!("✓ {} checked successfully", file_name);
-            Ok(())
-        }
+    let design = match analyzer.analyze_file(&source, path) {
+        Ok(design) => design,
         Err(errors) => {
             let sema_errors = convert_sema_errors(&errors);
-            Err(CliError::semantic(&file_name, sema_errors, source))
+            return Err(CliError::semantic(&file_name, sema_errors, source));
+        }
+    };
+
+    if verbose {
+        println!("  {} module(s)", design.module_count());
+        println!("  {} field(s)", design.field_count());
+        println!("  {} connection(s)", design.connection_count());
+        println!("  {} constraint(s)", design.constraint_count());
+    }
+
+    // Validate constraints if any exist
+    let constraint_count = design.constraint_count();
+    if constraint_count > 0 {
+        if verbose {
+            println!("  Validating {} constraint(s)...", constraint_count);
+        }
+
+        // Collect constraints from the IR
+        let collector = ConstraintCollector::new();
+        match collector.collect(&design) {
+            Ok((mut solver, _dependencies)) => {
+                // Run the solver to check for contradictions
+                match solver.solve() {
+                    Ok(result) => {
+                        if result.all_satisfied {
+                            if verbose {
+                                println!("  All constraints satisfiable");
+                            }
+                        } else {
+                            // Some constraints couldn't be fully deduced - this is OK for check
+                            if verbose {
+                                println!("  {} constraint(s) not fully deduced (OK)", result.not_deduced.len());
+                            }
+                        }
+                    }
+                    Err(SolverError::Contradiction(msg)) => {
+                        // This is an error - constraints contradict each other
+                        return Err(CliError::solver(
+                            &file_name,
+                            format!("Constraint contradiction: {}", msg),
+                            None,
+                            source,
+                        ));
+                    }
+                    Err(e) => {
+                        if verbose {
+                            println!("  Solver warning: {}", e);
+                        }
+                        // Other solver errors are warnings, not failures
+                    }
+                }
+            }
+            Err(e) => {
+                if verbose {
+                    println!("  Constraint collection warning: {}", e);
+                }
+                // Collection errors are warnings for check
+            }
         }
     }
+
+    println!("✓ {} checked successfully", file_name);
+    Ok(())
 }
 
 /// Convert semantic errors to CLI error info.
@@ -171,6 +225,24 @@ mod tests {
     fn test_check_verbose() {
         let mut file = NamedTempFile::with_suffix(".ato").unwrap();
         writeln!(file, "module Test:\n    pass").unwrap();
+
+        let result = run(file.path(), true);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_check_with_constraints() {
+        let mut file = NamedTempFile::with_suffix(".ato").unwrap();
+        writeln!(file, "module Resistor:\n    resistance: ohm\n    assert resistance > 0").unwrap();
+
+        let result = run(file.path(), false);
+        assert!(result.is_ok(), "Expected success, got: {:?}", result);
+    }
+
+    #[test]
+    fn test_check_with_constraints_verbose() {
+        let mut file = NamedTempFile::with_suffix(".ato").unwrap();
+        writeln!(file, "module Test:\n    voltage: V\n    assert voltage within 0V to 10V").unwrap();
 
         let result = run(file.path(), true);
         assert!(result.is_ok());

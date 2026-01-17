@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{CliError, CliResult, SemanticErrorInfo, read_file};
 use ato_sema::{Analyzer, ConstraintCollector, SemaError};
+use ato_solver::SolverError;
 
 /// Find the stdlib path by looking for src/faebryk/library relative to the project.
 fn find_stdlib_path(file_path: &Path) -> Option<PathBuf> {
@@ -115,20 +116,34 @@ pub fn run(path: &Path, output: Option<&Path>, verbose: bool) -> CliResult<()> {
                 match solver.solve() {
                     Ok(result) => {
                         if verbose {
-                            println!("    Solver completed in {} iteration(s)", result.iterations);
+                            println!("    Solver completed in {} iteration(s) ({:?})", result.iterations, result.elapsed);
                             if result.all_satisfied {
                                 println!("    All constraints satisfied");
                             } else {
-                                println!("    {} constraint(s) not deduced", result.not_deduced.len());
+                                println!("    {} constraint(s) not fully deduced", result.not_deduced.len());
                             }
                         }
                     }
+                    Err(SolverError::Contradiction(msg)) => {
+                        // Contradiction is a build failure
+                        return Err(CliError::solver(
+                            &file_name,
+                            format!("Constraint contradiction: {}", msg),
+                            None,
+                            source,
+                        ));
+                    }
+                    Err(SolverError::Timeout { iterations, elapsed }) => {
+                        if verbose {
+                            println!("    Solver timed out after {} iterations ({:?})", iterations, elapsed);
+                        }
+                        // Timeout is a warning, not a failure
+                    }
                     Err(e) => {
                         if verbose {
-                            println!("    Solver error: {}", e);
+                            println!("    Solver warning: {}", e);
                         }
-                        // For now, just warn about solver errors instead of failing
-                        // This allows the build to continue even if constraints can't be solved
+                        // Other solver errors are warnings
                     }
                 }
             }
