@@ -17,6 +17,7 @@ ato-ir = { workspace = true }
 ato-sema = { workspace = true }
 ato-solver = { workspace = true }
 ato-domain = { workspace = true }
+ato-export = { workspace = true }
 
 clap = { workspace = true }
 miette = { workspace = true }

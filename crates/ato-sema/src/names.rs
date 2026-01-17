@@ -339,9 +339,20 @@ impl<'a> NameResolver<'a> {
 
         let field_id = self.design.add_field(module_id, name, kind);
 
-        // Set span
+        // Set span and resolve instance type if applicable
         if let Some(field) = self.design.get_field_mut(field_id) {
             field.span = Some(field_ref.span);
+
+            // For instance fields, resolve the type reference to a ModuleId
+            if let ato_ir::FieldKind::Instance { type_ref, resolved_type, .. } = &mut field.kind {
+                // Look up the type name in scope
+                let type_name = type_ref.parts.last().map(|p| p.as_str()).unwrap_or("");
+                if let Some(binding) = scope.lookup(type_name) {
+                    if let Some(mod_id) = binding.as_module() {
+                        *resolved_type = Some(mod_id);
+                    }
+                }
+            }
         }
 
         scope.define_field(name, field_id, Some(field_ref.span));

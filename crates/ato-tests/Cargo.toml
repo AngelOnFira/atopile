@@ -16,5 +16,6 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+ato-export = { workspace = true }
 insta = { workspace = true }
 walkdir = { workspace = true }

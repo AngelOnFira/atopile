@@ -379,10 +379,10 @@ impl<'a> TypeChecker<'a> {
     fn check_assertion_expression(&mut self, expr: &Expression, scope: &Scope) {
         match expr {
             Expression::FieldRef(field_ref) => {
+                let name = field_ref.parts.first()
+                    .map(|p| p.name.name.clone())
+                    .unwrap_or_default();
                 if self.resolve_field_ref(field_ref, scope).is_none() {
-                    let name = field_ref.parts.first()
-                        .map(|p| p.name.name.clone())
-                        .unwrap_or_default();
                     self.errors.push(SemaError::undefined_name(&name, Some(field_ref.span)));
                 }
             }

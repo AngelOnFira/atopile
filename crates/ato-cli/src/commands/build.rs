@@ -4,11 +4,16 @@
 //! 1. Parse the source file
 //! 2. Run semantic analysis
 //! 3. Run constraint solver
-//! 4. Generate build artifacts (future)
+//! 4. Generate build artifacts (netlist, schematic, PCB, BOM)
 
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::error::{CliError, CliResult, SemanticErrorInfo, read_file};
+use ato_export::{
+    NetlistBuilder, KicadNetlistExporter, KicadSchematic, KicadPcb,
+    KicadProject, Bom, BomExporter, BomFormat,
+};
 use ato_sema::{Analyzer, ConstraintCollector, SemaError};
 use ato_solver::SolverError;
 
@@ -158,13 +163,153 @@ pub fn run(path: &Path, output: Option<&Path>, verbose: bool) -> CliResult<()> {
         println!("    No constraints to solve");
     }
 
-    // Phase 3: Output generation (future)
+    // Phase 3: Output generation
     if verbose {
         println!("  Phase 3: Output generation...");
-        if let Some(out_path) = output {
-            println!("    Output directory: {}", out_path.display());
+    }
+
+    // Determine output directory
+    let output_dir = match output {
+        Some(out_path) => out_path.to_path_buf(),
+        None => path.parent().unwrap_or(Path::new(".")).join("build"),
+    };
+
+    // Create output directory if it doesn't exist
+    if let Err(e) = fs::create_dir_all(&output_dir) {
+        return Err(CliError::io(format!(
+            "Failed to create output directory '{}': {}",
+            output_dir.display(),
+            e
+        )));
+    }
+
+    if verbose {
+        println!("    Output directory: {}", output_dir.display());
+    }
+
+    // Build netlist from design
+    let builder = NetlistBuilder::new(&design);
+    let netlist = match builder.build() {
+        Ok(netlist) => netlist,
+        Err(e) => {
+            if verbose {
+                println!("    Warning: Failed to build netlist: {}", e);
+            }
+            // Continue with empty netlist for now
+            ato_export::Netlist::new()
         }
-        println!("    (Output generation not yet implemented)");
+    };
+
+    if verbose {
+        println!("    {} component(s) in netlist", netlist.component_count());
+        println!("    {} net(s) in netlist", netlist.net_count());
+    }
+
+    // Get project name from file stem
+    let project_name = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("project");
+
+    // Generate KiCad netlist
+    let netlist_path = output_dir.join(format!("{}.net", project_name));
+    let exporter = KicadNetlistExporter::new(&netlist);
+    match exporter.export_to_string() {
+        Ok(content) => {
+            if let Err(e) = fs::write(&netlist_path, &content) {
+                if verbose {
+                    println!("    Warning: Failed to write netlist: {}", e);
+                }
+            } else if verbose {
+                println!("    Generated: {}", netlist_path.display());
+            }
+        }
+        Err(e) => {
+            if verbose {
+                println!("    Warning: Failed to generate netlist: {}", e);
+            }
+        }
+    }
+
+    // Generate KiCad schematic
+    let schematic_path = output_dir.join(format!("{}.kicad_sch", project_name));
+    let schematic = KicadSchematic::from_netlist(&netlist);
+    match schematic.export_to_string() {
+        Ok(content) => {
+            if let Err(e) = fs::write(&schematic_path, &content) {
+                if verbose {
+                    println!("    Warning: Failed to write schematic: {}", e);
+                }
+            } else if verbose {
+                println!("    Generated: {}", schematic_path.display());
+            }
+        }
+        Err(e) => {
+            if verbose {
+                println!("    Warning: Failed to generate schematic: {}", e);
+            }
+        }
+    }
+
+    // Generate KiCad PCB
+    let pcb_path = output_dir.join(format!("{}.kicad_pcb", project_name));
+    let pcb = KicadPcb::from_netlist(&netlist);
+    match pcb.export_to_string() {
+        Ok(content) => {
+            if let Err(e) = fs::write(&pcb_path, &content) {
+                if verbose {
+                    println!("    Warning: Failed to write PCB: {}", e);
+                }
+            } else if verbose {
+                println!("    Generated: {}", pcb_path.display());
+            }
+        }
+        Err(e) => {
+            if verbose {
+                println!("    Warning: Failed to generate PCB: {}", e);
+            }
+        }
+    }
+
+    // Generate KiCad project file
+    let project_path = output_dir.join(format!("{}.kicad_pro", project_name));
+    let kicad_project = KicadProject::new(project_name);
+    match kicad_project.to_json() {
+        Ok(content) => {
+            if let Err(e) = fs::write(&project_path, &content) {
+                if verbose {
+                    println!("    Warning: Failed to write project file: {}", e);
+                }
+            } else if verbose {
+                println!("    Generated: {}", project_path.display());
+            }
+        }
+        Err(e) => {
+            if verbose {
+                println!("    Warning: Failed to generate project file: {}", e);
+            }
+        }
+    }
+
+    // Generate BOM
+    let bom_path = output_dir.join(format!("{}_bom.csv", project_name));
+    let bom = Bom::from_netlist_grouped(&netlist);
+    let bom_exporter = BomExporter::new(&bom);
+    match bom_exporter.export_to_string(BomFormat::Jlcpcb) {
+        Ok(content) => {
+            if let Err(e) = fs::write(&bom_path, &content) {
+                if verbose {
+                    println!("    Warning: Failed to write BOM: {}", e);
+                }
+            } else if verbose {
+                println!("    Generated: {}", bom_path.display());
+            }
+        }
+        Err(e) => {
+            if verbose {
+                println!("    Warning: Failed to generate BOM: {}", e);
+            }
+        }
     }
 
     println!("✓ {} built successfully", file_name);

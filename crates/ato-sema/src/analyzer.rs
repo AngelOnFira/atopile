@@ -648,4 +648,49 @@ module Resistor:
         let module = &design.modules()[0];
         assert_eq!(module.traits.len(), 1);
     }
+
+    #[test]
+    fn test_analyze_instance_in_assertion() {
+        // Bug: instance created with `new` should be accessible in assertions
+        // First test without assertion to verify field is in design
+        let source_without_assert = r#"
+module Inner:
+    value: ohm
+
+module Outer:
+    inner = new Inner
+"#;
+        let mut analyzer = Analyzer::new();
+        let design = analyzer.analyze_source(source_without_assert).unwrap();
+
+        // Debug: Check if field was added to design
+        eprintln!("Design has {} modules", design.module_count());
+        for module in design.modules() {
+            eprintln!("Module '{}' has {} fields:", module.name, module.fields.len());
+            for field_id in &module.fields {
+                if let Some(field) = design.get_field(*field_id) {
+                    eprintln!("  - {} ({:?})", field.name, field.kind);
+                }
+            }
+        }
+
+        // Verify Outer has the 'inner' field
+        let outer = design.modules().iter().find(|m| m.name == "Outer").unwrap();
+        assert!(outer.fields.len() >= 1, "Outer should have at least 1 field");
+
+        // Now test with assertion
+        let source_with_assert = r#"
+module Inner:
+    value: ohm
+
+module Outer:
+    inner = new Inner
+    assert inner.value > 0
+"#;
+        let mut analyzer2 = Analyzer::new();
+        let result = analyzer2.analyze_source(source_with_assert);
+
+        // This currently fails because `inner` is not found in scope
+        assert!(result.is_ok(), "Instance should be accessible in assertion. Errors: {:?}", result.err());
+    }
 }
