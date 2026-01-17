@@ -1,100 +1,99 @@
 # Atopile Rust Rewrite Plan
 
-This document outlines a strategy for rewriting performance-critical parts of atopile in Rust, using the Ralph Wiggum continuous iteration methodology.
+This document outlines the strategy for a **full rewrite** of atopile in Rust. The goal is a standalone Rust compiler that can build `.ato` projects **without any Python dependencies**.
 
-## Atopile Architecture Summary
+This is NOT an incremental migration - we are building a completely new Rust toolchain that will eventually replace the Python implementation entirely.
 
-The project has several distinct layers:
+## Current Progress
 
-### 1. Language Frontend (`src/atopile/`)
-
-| Component | Current Tech | Files | Complexity |
-|-----------|-------------|-------|------------|
-| Lexer/Parser | ANTLR4 → Python | `parser/Ato*.g4`, `*.py` | Medium |
-| AST Visitor | Python visitor pattern | `front_end.py` (3127 lines) | High |
-| Error handling | Custom exceptions | Scattered | Medium |
-
-### 2. Core Engine (`src/faebryk/core/`)
-
-| Component | Current Tech | Files | Complexity |
-|-----------|-------------|-------|------------|
-| Node/Graph system | Python + C++ bindings | `node.py`, `graph.py`, `cpp/` | High |
-| Parameter system | Python | `parameter.py` (1947 lines) | High |
-| Constraint solver | Python | `solver/` (6+ files, 1500+ lines) | Very High |
-| Trait system | Python metaclasses | `trait.py` | Medium |
-
-### 3. S-Expression Engine (`src/faebryk/core/zig/`)
-
-| Component | Current Tech | Files | Complexity |
-|-----------|-------------|-------|------------|
-| Tokenizer | Zig | `tokenizer.zig` | Medium |
-| AST/Parser | Zig | `ast.zig` | Medium |
-| KiCad models | Zig | `kicad/*.zig` | Medium |
-| Python bindings | Zig | `pyzig/*.zig` | High |
-
-### 4. Sets/Domains (`src/faebryk/libs/sets/`)
-
-| Component | Current Tech | Files | Complexity |
-|-----------|-------------|-------|------------|
-| Quantity intervals | Python | `quantity_sets.py` | Medium |
-| Numeric sets | Python | `numeric_sets.py` | Medium |
-| Generic sets | Python | `sets.py` | Medium |
+| Crate | Status | Description |
+|-------|--------|-------------|
+| `ato-lexer` | ✅ Complete | Tokenization with INDENT/DEDENT |
+| `ato-parser` | ✅ Complete | AST generation with chumsky (error recovery) |
+| `ato-domain` | ✅ Complete | Quantity/interval/set types |
+| `ato-solver` | ✅ Complete | Constraint solver with simplification |
+| `ato-ir` | 🔲 Not started | Intermediate representation |
+| `ato-sema` | 🔲 Not started | Semantic analysis |
+| `ato-cli` | 🔲 Not started | Main compiler CLI |
 
 ---
 
-## Proposed Rust Rewrite Strategy
+## Architecture Overview
 
-### Phase 1: Language Core (Most Valuable First)
-
-**1a. Ato Lexer/Parser in Rust**
-- Self-contained, clear spec (G4 grammar exists)
-- Can use `logos` for lexing + `chumsky` or hand-written recursive descent
-- Benefits: 10-100x faster parsing, WASM for browser IDE, better errors
-
-**1b. AST Types**
-- Define the complete AST in Rust with `serde` support
-- JSON/MessagePack output for Python interop
-- This becomes the "contract" between Rust frontend and Python backend
-
-### Phase 2: Constraint Solver
-
-**2a. Set/Domain System**
-- Port `Quantity_Interval`, `Quantity_Interval_Disjoint`, `P_Set`
-- Rust's type system is perfect for this
-- Use `uom` crate for unit handling
-
-**2b. Expression/Parameter System**
-- Port `Parameter`, `Expression`, `Predicate` types
-- Algebraic data types work naturally here
-
-**2c. Solver Algorithms**
-- Port simplification passes (canonical, structural, expression-wise)
-- Fixed-point iteration loop
-- Contradiction detection
-
-### Phase 3: Optional Extensions
-
-**3a. S-Expression Engine**
-- Could stay in Zig or port to Rust
-- Zig is already fast, may not be worth the effort
-
-**3b. Graph System**
-- Replace C++ bindings with Rust
-- PyO3 for Python interop
+```
+┌─────────────────────────────────────────────────────────────┐
+│                         ato-cli                              │
+│  (main binary - orchestrates compilation, handles I/O)       │
+└─────────────────────────────────────────────────────────────┘
+                              │
+         ┌────────────────────┼────────────────────┐
+         ▼                    ▼                    ▼
+┌─────────────┐      ┌─────────────┐      ┌─────────────┐
+│  ato-lexer  │      │  ato-sema   │      │  ato-solver │
+│  (tokens)   │      │  (analysis) │      │ (constraints)│
+└─────────────┘      └─────────────┘      └─────────────┘
+         │                    │                    │
+         ▼                    ▼                    ▼
+┌─────────────┐      ┌─────────────┐      ┌─────────────┐
+│ ato-parser  │      │   ato-ir    │      │ ato-domain  │
+│   (AST)     │      │   (graph)   │      │  (types)    │
+└─────────────┘      └─────────────┘      └─────────────┘
+```
 
 ---
 
-## Ralph Wiggum Prompts
+## Phase 0: Codebase Cleanup 🔲 TODO
 
-These prompts are designed for the Ralph loop continuous iteration approach.
-Run with: `/ralph-loop "<prompt>" --max-iterations 50 --completion-promise "<PROMISE>"`
+Before proceeding with new development, clean up dead code from earlier experimentation:
 
-### Prompt 1: Ato Lexer
+### Prompt 0: Remove Dead Code
+
+```markdown
+# Task: Clean Up Unused Code
+
+Remove code that won't be used in the full rewrite.
+
+## Items to Remove
+
+### 1. Remove ato-py crate
+The Python bindings (`crates/ato-py/`) were created for incremental migration but aren't needed for a full rewrite.
+- Delete `crates/ato-py/` directory entirely
+- Remove from workspace `Cargo.toml` members
+
+### 2. Consolidate parser to chumsky only
+The parser currently has two implementations:
+- `src/parse/` - Hand-written recursive descent parser (default)
+- `src/chumsky/` - Chumsky-based parser with error recovery (feature-gated)
+
+Chumsky provides better error recovery, so make it the default:
+- Move `src/chumsky/` contents to `src/parse/` (replacing old implementation)
+- Remove the `chumsky` feature flag from Cargo.toml
+- Make chumsky + ariadne required dependencies (not optional)
+- Update lib.rs to export chumsky parser as the default
+- Update all tests
+
+## Tests Must Pass
+- `cargo test -p ato-parser`
+- All existing parser tests continue to work
+
+## Completion Criteria
+Output <promise>CLEANUP_COMPLETE</promise> when:
+- ato-py directory deleted
+- Parser consolidated to chumsky only
+- No feature flags for parser selection
+- All tests pass
+```
+
+---
+
+## Phase 1: Language Frontend ✅ COMPLETE
+
+### Prompt 1: Ato Lexer ✅
 
 ```markdown
 # Task: Implement Ato Lexer in Rust
 
-Create a lexer for the Ato DSL in Rust using the `logos` crate.
+Create a lexer for the Ato DSL using the `logos` crate.
 
 ## Requirements
 1. Tokenize all tokens from the grammar (see src/atopile/parser/AtoLexer.g4)
@@ -102,180 +101,354 @@ Create a lexer for the Ato DSL in Rust using the `logos` crate.
 3. Track source locations (line, column, byte offset)
 4. Support string literals, numbers (int, float, hex, bin, oct)
 5. Handle physical quantities (10kohm, 5V, 100nF)
-6. Generate helpful error messages for invalid tokens
-
-## Structure
-- `crates/ato-lexer/src/lib.rs` - Main lexer implementation
-- `crates/ato-lexer/src/tokens.rs` - Token enum
-- `crates/ato-lexer/src/span.rs` - Source location tracking
-- `crates/ato-lexer/tests/` - Test suite
 
 ## Tests Must Pass
 - `cargo test -p ato-lexer`
-- Parse all .ato files in examples/ without panic
-- Benchmark: lex 10,000 lines in < 10ms
 
-## Completion Criteria
-Output <promise>LEXER_COMPLETE</promise> when:
-- All tokens from grammar are handled
-- INDENT/DEDENT works correctly
-- All tests pass
-- Examples parse without error
+## Completion: LEXER_COMPLETE ✅
 ```
 
-### Prompt 2: Ato Parser
+### Prompt 2: Ato Parser ✅
 
 ```markdown
 # Task: Implement Ato Parser in Rust
 
-Create a parser for the Ato DSL that produces a typed AST.
+Create a parser that produces a typed AST.
 
 ## Requirements
 1. Parse according to src/atopile/parser/AtoParser.g4
-2. Use the ato-lexer crate as input
+2. Use ato-lexer as input
 3. Produce strongly-typed AST with serde serialization
-4. Generate excellent error messages with source spans
-5. Handle all statement types: imports, blockdefs, assignments, connections, assertions, for-loops, traits
-
-## Structure
-- `crates/ato-parser/src/lib.rs` - Parser entry point
-- `crates/ato-parser/src/ast.rs` - AST type definitions
-- `crates/ato-parser/src/parse/*.rs` - Parse functions per node type
-- `crates/ato-parser/src/error.rs` - Error types with nice formatting
+4. Generate good error messages with source spans
 
 ## Tests Must Pass
 - `cargo test -p ato-parser`
-- Parse all .ato files in examples/ and packages/
-- Round-trip test: parse → serialize → matches expected JSON
 
-## Completion Criteria
-Output <promise>PARSER_COMPLETE</promise> when:
-- Full grammar coverage
-- All tests pass
-- Error messages include source context
-- JSON output matches expected schema
-```
-
-### Prompt 3: Quantity/Set System
-
-```markdown
-# Task: Implement Constraint Domain Types in Rust
-
-Port the faebryk set/domain system for constraint solving.
-
-## Requirements
-1. `Quantity` type with unit tracking (use `uom` crate)
-2. `Interval<T>` for continuous ranges (e.g., 5V to 6V)
-3. `DisjointIntervals<T>` for unions of intervals
-4. `BilateralTolerance` (e.g., 10kohm +/- 5%)
-5. Set operations: union, intersection, contains, is_subset
-6. Serde serialization for Python interop
-
-## Reference Implementation
-See: src/faebryk/libs/sets/quantity_sets.py
-
-## Structure
-- `crates/ato-domain/src/lib.rs`
-- `crates/ato-domain/src/quantity.rs` - Physical quantities with units
-- `crates/ato-domain/src/interval.rs` - Interval types
-- `crates/ato-domain/src/sets.rs` - Set operations
-
-## Tests Must Pass
-- `cargo test -p ato-domain`
-- Property tests for set algebra laws
-- All Python test cases ported and passing
-
-## Completion Criteria
-Output <promise>DOMAIN_COMPLETE</promise> when:
-- All types implemented
-- Set algebra is correct (verified by property tests)
-- Serialization works
-```
-
-### Prompt 4: Constraint Solver Core
-
-```markdown
-# Task: Implement Constraint Solver in Rust
-
-Create the core constraint solver for Ato parameter resolution.
-
-## Requirements
-1. Expression types: `Parameter`, `Literal`, arithmetic operations, predicates
-2. Predicate types: Is, LessOrEqual, GreaterOrEqual, IsSubset, Within
-3. Solver with simplification pipeline:
-   - Canonical form conversion
-   - Structural simplifications (contradiction detection, transitive subset)
-   - Expression-wise simplifications (constant folding, algebraic)
-   - Fixed-point iteration until no changes
-4. Contradiction detection with clear error messages
-5. Timeout handling
-
-## Reference Implementation
-See: src/faebryk/core/solver/defaultsolver.py
-
-## Structure
-- `crates/ato-solver/src/lib.rs`
-- `crates/ato-solver/src/expression.rs` - Expression types
-- `crates/ato-solver/src/predicate.rs` - Constraint predicates
-- `crates/ato-solver/src/simplify/*.rs` - Simplification passes
-- `crates/ato-solver/src/solver.rs` - Main solver loop
-
-## Tests Must Pass
-- `cargo test -p ato-solver`
-- Solve constraints from example projects
-- Performance: 1000 constraints in < 100ms
-
-## Completion Criteria
-Output <promise>SOLVER_COMPLETE</promise> when:
-- All predicate types work
-- Simplification converges correctly
-- Contradictions are detected with good errors
-- Example constraints solve correctly
+## Completion: PARSER_COMPLETE ✅
 ```
 
 ---
 
-## Implementation Recommendations
+## Phase 2: Constraint System ✅ COMPLETE
 
-### Crate Structure
+### Prompt 3: Domain Types ✅
+
+```markdown
+# Task: Implement Constraint Domain Types
+
+## Requirements
+1. `Quantity` type with unit tracking
+2. `Interval` for continuous ranges
+3. `DisjointIntervals` for unions
+4. `BilateralTolerance` (e.g., 10kohm +/- 5%)
+5. Set operations: union, intersection, contains, is_subset
+
+## Tests Must Pass
+- `cargo test -p ato-domain`
+
+## Completion: DOMAIN_COMPLETE ✅
+```
+
+### Prompt 4: Constraint Solver ✅
+
+```markdown
+# Task: Implement Constraint Solver
+
+## Requirements
+1. Expression types: Parameter, Literal, arithmetic ops
+2. Predicate types: Is, LessOrEqual, GreaterOrEqual, IsSubset, Within
+3. Simplification pipeline with fixed-point iteration
+4. Contradiction detection
+
+## Tests Must Pass
+- `cargo test -p ato-solver`
+
+## Completion: SOLVER_COMPLETE ✅
+```
+
+---
+
+## Phase 3: Semantic Analysis 🔲 IN PROGRESS
+
+### Prompt 5: Intermediate Representation
+
+```markdown
+# Task: Implement Core IR (ato-ir crate)
+
+Create the intermediate representation that models an Ato design after parsing.
+
+## Requirements
+1. Module/Component/Interface definitions with unique IDs
+2. Field system: parameters, pins, signals, instances
+3. Connection graph (which pins connect to which)
+4. Constraint collection (assertions on parameters)
+5. Import resolution data structures
+
+## Key Types
+- `ModuleId`, `FieldId`, `ConnectionId` - interned identifiers
+- `Module` - contains fields, connections, constraints, nested modules
+- `Field` - parameter, pin, signal, or instance
+- `Connection` - links between connectable fields
+- `Design` - root container with all modules
+
+## Structure
+- `crates/ato-ir/src/lib.rs`
+- `crates/ato-ir/src/module.rs` - Module/Component/Interface
+- `crates/ato-ir/src/field.rs` - Fields and their types
+- `crates/ato-ir/src/connection.rs` - Connection graph
+- `crates/ato-ir/src/design.rs` - Top-level design container
+
+## Tests Must Pass
+- `cargo test -p ato-ir`
+- Can represent the structure of example .ato files
+
+## Completion Criteria
+Output <promise>IR_COMPLETE</promise> when:
+- All core types implemented
+- Can model modules, fields, connections
+- Unit tests pass
+```
+
+### Prompt 6: Semantic Analysis
+
+```markdown
+# Task: Implement Semantic Analysis (ato-sema crate)
+
+Lower parsed AST to IR with full semantic checking.
+
+## Requirements
+1. Import resolution - find and load dependent .ato files
+2. Name resolution - resolve all identifiers to their definitions
+3. Type checking - ensure connections are between compatible interfaces
+4. Inheritance - apply `from` clauses to inherit fields
+5. Template instantiation - expand `new Type<args>`
+6. For-loop expansion - unroll for loops into concrete instances
+7. Error collection - gather all semantic errors with source spans
+
+## Key Passes
+1. `resolve_imports()` - Build module dependency graph, load files
+2. `resolve_names()` - Link identifiers to definitions
+3. `check_types()` - Verify interface compatibility
+4. `lower_to_ir()` - Convert AST → IR with all expansions
+
+## Structure
+- `crates/ato-sema/src/lib.rs`
+- `crates/ato-sema/src/imports.rs` - Import resolution
+- `crates/ato-sema/src/names.rs` - Name resolution
+- `crates/ato-sema/src/types.rs` - Type checking
+- `crates/ato-sema/src/lower.rs` - AST → IR lowering
+
+## Tests Must Pass
+- `cargo test -p ato-sema`
+- Can analyze example .ato files without false errors
+- Catches real errors (undefined names, type mismatches)
+
+## Completion Criteria
+Output <promise>SEMA_COMPLETE</promise> when:
+- Import resolution works
+- Name resolution works
+- Type checking catches errors
+- AST lowers to IR correctly
+```
+
+---
+
+## Phase 4: CLI and End-to-End Testing 🔲 NOT STARTED
+
+### Prompt 7: CLI Foundation
+
+```markdown
+# Task: Implement CLI (ato-cli crate)
+
+Create the main `ato` binary that orchestrates compilation.
+
+## Requirements
+1. Parse command-line arguments (use `clap`)
+2. Load and parse .ato files
+3. Run semantic analysis
+4. Run constraint solver
+5. Report errors with nice formatting (use `miette`)
+6. Output build artifacts (initially just validation pass/fail)
+
+## Commands
+- `ato build <file.ato>` - Compile a project
+- `ato check <file.ato>` - Check without full build
+- `ato parse <file.ato>` - Parse and dump AST (for debugging)
+
+## Structure
+- `crates/ato-cli/src/main.rs` - Entry point
+- `crates/ato-cli/src/commands/build.rs`
+- `crates/ato-cli/src/commands/check.rs`
+- `crates/ato-cli/src/commands/parse.rs`
+- `crates/ato-cli/src/error.rs` - Error formatting
+
+## Tests Must Pass
+- `cargo test -p ato-cli`
+- `cargo run -p ato-cli -- check examples/*/elec/src/*.ato` passes
+- Integration tests with known-good and known-bad .ato files
+
+## Completion Criteria
+Output <promise>CLI_COMPLETE</promise> when:
+- Can parse real .ato files
+- Reports errors clearly
+- Integration tests pass
+```
+
+### Prompt 8: End-to-End Test Suite
+
+```markdown
+# Task: Create End-to-End Test Suite
+
+Build a comprehensive test suite that validates the full compiler pipeline.
+
+## Requirements
+1. Golden tests - parse example files, compare output
+2. Error tests - verify specific errors are caught
+3. Solver tests - verify constraint solving on real designs
+4. Regression tests - prevent previously fixed bugs from returning
+
+## Test Categories
+
+### Parse Tests (`tests/parse/`)
+- `valid/*.ato` - Should parse successfully
+- `invalid/*.ato` - Should produce specific parse errors
+
+### Semantic Tests (`tests/sema/`)
+- `valid/*.ato` - Should pass semantic analysis
+- `errors/*.ato` - Should catch specific semantic errors
+
+### Solver Tests (`tests/solver/`)
+- `satisfiable/*.ato` - Constraints should solve
+- `contradictions/*.ato` - Should detect contradictions
+
+### Integration Tests (`tests/integration/`)
+- Full builds of example projects
+- Comparison with Python implementation output
+
+## Structure
+- `tests/` directory at workspace root
+- `tests/harness.rs` - Common test utilities
+- Snapshot testing with `insta` crate
+
+## Completion Criteria
+Output <promise>E2E_TESTS_COMPLETE</promise> when:
+- 50+ test cases covering major features
+- All example projects pass
+- CI runs tests on every commit
+```
+
+---
+
+## Phase 5: Output Generation 🔲 FUTURE
+
+### Prompt 9: KiCad/Netlist Output
+
+```markdown
+# Task: Generate Build Outputs
+
+Produce actual build artifacts from compiled designs.
+
+## Requirements
+1. Netlist generation (connections between components)
+2. BOM generation (bill of materials)
+3. KiCad project output (or compatible format)
+4. Part selection integration (JLCPCB, etc.)
+
+## This phase depends on understanding the current output formats.
+## May require porting the Zig S-expression engine or reimplementing.
+```
+
+---
+
+## Crate Structure
+
+The Rust rewrite consists of pure Rust crates with no Python dependencies:
 
 ```
 crates/
-├── ato-lexer/          # Tokenization
-├── ato-parser/         # Parsing → AST
-├── ato-ast/            # Shared AST types (if separated)
-├── ato-domain/         # Quantity/interval/set types
-├── ato-solver/         # Constraint solver
-└── ato-py/             # PyO3 bindings for Python interop
+├── ato-lexer/          # ✅ Tokenization (logos-based)
+├── ato-parser/         # ✅ Parsing → AST (chumsky-based, error recovery)
+├── ato-domain/         # ✅ Quantity/interval/set types
+├── ato-solver/         # ✅ Constraint solver with simplification
+├── ato-ir/             # 🔲 Intermediate representation (design graph)
+├── ato-sema/           # 🔲 Semantic analysis (name resolution, type checking)
+└── ato-cli/            # 🔲 Main compiler binary (orchestrates everything)
+
+tests/
+├── parse/              # Parser golden tests
+├── sema/               # Semantic analysis tests
+├── solver/             # Constraint solver tests
+└── integration/        # Full pipeline tests (CLI end-to-end)
 ```
 
-### Key Crate Dependencies
+**Note**: `ato-py` (Python bindings) should be deleted - it was for incremental migration which we're not doing.
+
+---
+
+## Key Dependencies
 
 ```toml
 [workspace.dependencies]
-logos = "0.14"           # Fast lexer generator
-chumsky = "0.9"          # Parser combinators (optional)
-miette = "7"             # Beautiful error reporting
-ariadne = "0.4"          # Alternative error reporting
-serde = "1"              # Serialization
-serde_json = "1"         # JSON output
-uom = "0.36"             # Units of measure
-proptest = "1"           # Property-based testing
-pyo3 = "0.21"            # Python bindings
+# Lexing
+logos = "0.15"           # Fast lexer generation
+
+# Parsing
+chumsky = "0.9"          # Parser combinators with error recovery
+ariadne = "0.4"          # Beautiful error reporting
+
+# Error handling
+miette = { version = "7", features = ["fancy"] }
+thiserror = "1"
+
+# Data structures
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Testing
+insta = "1"              # Snapshot testing
 ```
 
-### Python Integration Strategy
+---
 
-1. **Start with JSON IPC**: Rust CLI outputs JSON, Python reads it
-2. **Graduate to PyO3**: Direct Python bindings when stable
-3. **Incremental replacement**: Each Rust crate can replace its Python equivalent one at a time
+## Testing Strategy
 
-### Testing Strategy
+1. **Unit tests**: Each crate has internal tests (`cargo test -p <crate>`)
+2. **Integration tests**: `tests/` directory with end-to-end scenarios
+3. **Golden tests**: Compare output against known-good snapshots
+4. **Example projects**: Build all `examples/` and `packages/` successfully
 
-1. **Unit tests**: Per-function correctness
-2. **Property tests**: Set algebra laws, parser round-trips
-3. **Golden tests**: Parse all existing .ato files, compare output
-4. **Benchmark tests**: Ensure performance targets are met
+---
+
+## Success Metrics
+
+| Milestone | Metric |
+|-----------|--------|
+| Parse all examples | `ato check examples/**/*.ato` exits 0 |
+| Semantic analysis | No false positives on valid code |
+| Solver correctness | Matches Python solver results |
+| Error quality | Errors point to correct source locations |
+| Performance | 10x faster than Python implementation |
+
+---
+
+## Next Steps
+
+### Completed
+1. ✅ ~~Create ato-lexer~~ - Tokenization with INDENT/DEDENT
+2. ✅ ~~Create ato-parser~~ - AST with error recovery
+3. ✅ ~~Create ato-domain~~ - Quantity/interval types
+4. ✅ ~~Create ato-solver~~ - Constraint solver
+
+### Up Next (in order)
+5. 🔲 **Cleanup** - Remove ato-py, consolidate parser to chumsky only
+6. 🔲 **Create ato-ir** - Intermediate representation for designs
+7. 🔲 **Create ato-sema** - Semantic analysis (imports, names, types)
+8. 🔲 **Create ato-cli** - Main `ato` binary that ties everything together
+9. 🔲 **E2E tests** - Comprehensive test suite validating full pipeline
+10. 🔲 **Output generation** - KiCad, BOM, netlist (future)
 
 ---
 
@@ -287,35 +460,10 @@ pyo3 = "0.21"            # Python bindings
 
 ### Frontend
 - `src/atopile/front_end.py` - DSL → Faebryk compiler (3127 lines)
-- `src/atopile/parse.py` - ANTLR4 wrapper
 
 ### Solver
-- `src/faebryk/core/parameter.py` - Parameter/Expression types (1947 lines)
-- `src/faebryk/core/solver/defaultsolver.py` - Main solver (471 lines)
-- `src/faebryk/core/solver/symbolic/` - Simplification algorithms
+- `src/faebryk/core/parameter.py` - Parameter/Expression types
+- `src/faebryk/core/solver/defaultsolver.py` - Main solver
 
 ### Domain Types
 - `src/faebryk/libs/sets/quantity_sets.py` - Physical quantity intervals
-- `src/faebryk/libs/sets/sets.py` - Generic set operations
-
----
-
-## Success Metrics
-
-| Component | Metric | Target |
-|-----------|--------|--------|
-| Lexer | Throughput | 100k lines/sec |
-| Parser | Throughput | 50k lines/sec |
-| Solver | 1000 constraints | < 100ms |
-| Memory | Large project | < 100MB |
-| Errors | Quality | Source spans, suggestions |
-
----
-
-## Next Steps
-
-1. Create the `crates/` workspace structure
-2. Start with `ato-lexer` using Ralph loop
-3. Validate against existing .ato files
-4. Proceed to parser, then solver
-5. Add PyO3 bindings for Python integration
