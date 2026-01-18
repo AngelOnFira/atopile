@@ -9,8 +9,6 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use error::CliResult;
-
 /// Atopile - A declarative language for designing electronics.
 #[derive(Parser)]
 #[command(name = "ato")]
@@ -58,6 +56,47 @@ enum Commands {
         #[arg(short, long)]
         verbose: bool,
     },
+
+    /// Search and query the parts database.
+    Parts {
+        #[command(subcommand)]
+        action: PartsAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum PartsAction {
+    /// Search for parts in the LCSC database.
+    Search {
+        /// Search query (e.g., "10k 0402 resistor", "100nF capacitor").
+        #[arg(value_name = "QUERY")]
+        query: String,
+
+        /// Component type filter (resistor, capacitor, inductor, etc.).
+        #[arg(short = 't', long)]
+        component_type: Option<String>,
+
+        /// Package filter (0402, 0603, 0805, etc.).
+        #[arg(short, long)]
+        package: Option<String>,
+
+        /// Maximum number of results.
+        #[arg(short, long, default_value = "10")]
+        limit: usize,
+    },
+
+    /// Fetch a specific part by LCSC ID.
+    Fetch {
+        /// LCSC part ID (e.g., "C25871" or just "25871").
+        #[arg(value_name = "LCSC_ID")]
+        lcsc_id: String,
+    },
+
+    /// Show cache information.
+    CacheInfo,
+
+    /// Clear the parts cache.
+    CacheClear,
 }
 
 fn main() -> ExitCode {
@@ -66,7 +105,20 @@ fn main() -> ExitCode {
     let result = match cli.command {
         Commands::Parse { file, format } => commands::parse::run(&file, &format),
         Commands::Check { file, verbose } => commands::check::run(&file, verbose),
-        Commands::Build { file, output, verbose } => commands::build::run(&file, output.as_deref(), verbose),
+        Commands::Build { file, output, verbose } => {
+            commands::build::run(&file, output.as_deref(), verbose)
+        }
+        Commands::Parts { action } => match action {
+            PartsAction::Search {
+                query,
+                component_type,
+                package,
+                limit,
+            } => commands::parts::search(&query, component_type.as_deref(), package.as_deref(), limit),
+            PartsAction::Fetch { lcsc_id } => commands::parts::fetch(&lcsc_id),
+            PartsAction::CacheInfo => commands::parts::cache_info(),
+            PartsAction::CacheClear => commands::parts::cache_clear(),
+        },
     };
 
     match result {

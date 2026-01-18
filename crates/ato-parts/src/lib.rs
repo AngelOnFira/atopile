@@ -21,6 +21,8 @@
 //! - [`PartQuery`] - Query criteria for finding matching parts
 //! - [`PartDatabase`] - Trait for querying part databases
 //! - [`PartSelector`] - Trait for ranking/selecting parts
+//! - [`LcscClient`] - LCSC/JLCPCB API client implementation
+//! - [`PartCache`] - SQLite cache for offline-first operation
 //!
 //! # Example
 //!
@@ -45,13 +47,14 @@
 //!
 //! # Database Implementations
 //!
-//! This crate defines the traits but does not include any concrete database
-//! implementations. Implementations for specific suppliers (JLCPCB, Digikey, etc.)
-//! should be provided in separate crates or modules.
+//! - **LCSC**: The [`LcscClient`] connects to the LCSC/JLCPCB component database
+//! - **Cached**: The [`CachedDatabase`] wraps any database with SQLite caching
 
 mod part;
 mod database;
 mod query;
+mod lcsc;
+mod cache;
 
 pub use part::{
     Availability,
@@ -84,11 +87,18 @@ pub use query::{
     ResistorQuery,
 };
 
+pub use lcsc::LcscClient;
+
+pub use cache::{CachedDatabase, PartCache};
+
 /// Prelude module for convenient imports.
 pub mod prelude {
     pub use crate::{
+        CachedDatabase,
         ComponentType,
+        LcscClient,
         Part,
+        PartCache,
         PartDatabase,
         PartId,
         PartQuery,
