@@ -615,8 +615,54 @@ impl PackageManager {
         target: &Path,
         git_ref: Option<&str>,
     ) -> Result<(), SemaError> {
-        // Try using git2 library first
-        match git2::Repository::clone(url, target) {
+        // First try using system git command (handles credentials better)
+        if let Ok(status) = std::process::Command::new("git")
+            .args(["clone", "--depth", "1"])
+            .args(git_ref.map(|r| vec!["--branch", r]).unwrap_or_default())
+            .arg(url)
+            .arg(target)
+            .status()
+        {
+            if status.success() {
+                return Ok(());
+            }
+        }
+
+        // Fall back to git2 with proper credential handling
+        let mut callbacks = git2::RemoteCallbacks::new();
+
+        // Try to use credential helper from git config
+        callbacks.credentials(|_url, username_from_url, allowed_types| {
+            // First try SSH agent
+            if allowed_types.contains(git2::CredentialType::SSH_KEY) {
+                if let Some(username) = username_from_url {
+                    return git2::Cred::ssh_key_from_agent(username);
+                }
+            }
+
+            // Try default credentials (for public repos)
+            if allowed_types.contains(git2::CredentialType::DEFAULT) {
+                return git2::Cred::default();
+            }
+
+            // Try git credential helper
+            if allowed_types.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
+                if let Some(username) = username_from_url {
+                    // For public repos, use empty password
+                    return git2::Cred::userpass_plaintext(username, "");
+                }
+            }
+
+            Err(git2::Error::from_str("no credentials available"))
+        });
+
+        let mut fetch_options = git2::FetchOptions::new();
+        fetch_options.remote_callbacks(callbacks);
+
+        let mut builder = git2::build::RepoBuilder::new();
+        builder.fetch_options(fetch_options);
+
+        match builder.clone(url, target) {
             Ok(repo) => {
                 // Checkout specific ref if provided
                 if let Some(ref_name) = git_ref {

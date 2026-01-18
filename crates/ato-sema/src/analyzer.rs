@@ -70,20 +70,8 @@ impl Analyzer {
     /// 4. Type check
     /// 5. Lower to IR
     pub fn analyze_source(&mut self, source: &str) -> Result<Design, Vec<SemaError>> {
-        // Parse the source
-        let ast = match ato_parser::parse(source) {
-            Ok(ast) => ast,
-            Err(errors) => {
-                return Err(errors.into_iter().map(|e| {
-                    SemaError::ParseError {
-                        file: "<input>".to_string(),
-                        message: e.to_string(),
-                    }
-                }).collect());
-            }
-        };
-
-        self.analyze(ast)
+        // Use a dummy path for source analysis
+        self.analyze_file(source, std::path::Path::new("<input>"))
     }
 
     /// Analyze an already-parsed AST and produce a Design.
@@ -144,6 +132,7 @@ impl Analyzer {
         if let Err(errors) = resolver.index_stdlib() {
             self.errors.extend(errors);
         }
+
 
         // Parse the main file
         let ast = match ato_parser::parse(source) {
@@ -819,6 +808,231 @@ module App:
         assert!(
             errors.iter().any(|e| matches!(e, SemaError::UnresolvedImport { .. })),
             "Expected UnresolvedImport error, got: {:?}", errors
+        );
+    }
+
+    #[test]
+    fn test_analyze_package_import() {
+        // Test that external package imports work when packages are installed
+        // External packages are stored in .ato/modules/<org>/<package>/
+        use tempfile::TempDir;
+
+        // Create project directory structure
+        let project_dir = TempDir::new().unwrap();
+
+        // Create a mock installed package in .ato/modules
+        let package_dir = project_dir.path().join(".ato/modules/atopile/usb-connectors");
+        std::fs::create_dir_all(&package_dir).unwrap();
+        std::fs::write(package_dir.join("usb-connectors.ato"), r#"
+module USBCConn:
+    pin vbus
+    pin gnd
+    pin dp
+    pin dn
+"#).unwrap();
+
+        // Create main source file that imports from the package
+        let src_dir = project_dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let source_path = src_dir.join("main.ato");
+        std::fs::write(&source_path, r#"
+from "atopile/usb-connectors/usb-connectors.ato" import USBCConn
+
+module App:
+    usb = new USBCConn
+"#).unwrap();
+
+        let source = std::fs::read_to_string(&source_path).unwrap();
+        let mut analyzer = Analyzer::new()
+            .with_root_dir(project_dir.path());
+        let result = analyzer.analyze_file(&source, &source_path);
+
+        assert!(result.is_ok(), "Package import should work. Errors: {:?}", result.err());
+        let design = result.unwrap();
+
+        // Should have both modules
+        assert!(
+            design.modules().iter().any(|m| m.name == "USBCConn"),
+            "USBCConn should be imported from package"
+        );
+        assert!(
+            design.modules().iter().any(|m| m.name == "App"),
+            "App module should exist"
+        );
+
+        // App.usb should have resolved_type
+        let app = design.modules().iter().find(|m| m.name == "App").unwrap();
+        let usb_id = app.get_field("usb").expect("usb field should exist");
+        let usb_field = design.get_field(usb_id).unwrap();
+
+        if let ato_ir::FieldKind::Instance { resolved_type, .. } = &usb_field.kind {
+            assert!(resolved_type.is_some(), "usb should have resolved_type pointing to USBCConn");
+        } else {
+            panic!("usb should be an Instance field");
+        }
+    }
+
+    // =========================================================================
+    // GAP TESTS - These document missing functionality
+    // =========================================================================
+
+    #[test]
+    fn test_gap1_instance_field_expansion() {
+        // When `inner = new Inner` is processed, we should be able to access
+        // inner.value through the instance's resolved type.
+        let source = r#"
+module Inner:
+    value: ohm
+    pin p1
+
+module Outer:
+    inner = new Inner
+"#;
+        let mut analyzer = Analyzer::new();
+        let result = analyzer.analyze_source(source);
+        assert!(result.is_ok());
+
+        let design = result.unwrap();
+        let outer = design.modules().iter().find(|m| m.name == "Outer").unwrap();
+        let inner_field_id = outer.get_field("inner").expect("inner field should exist");
+        let inner_field = design.get_field(inner_field_id).unwrap();
+
+        // The inner field should have resolved_type pointing to Inner module
+        if let ato_ir::FieldKind::Instance { resolved_type, .. } = &inner_field.kind {
+            assert!(resolved_type.is_some(), "Instance should have resolved type");
+
+            // Verify we can find Inner module and its fields
+            let inner_module = design.get_module(resolved_type.unwrap()).unwrap();
+            assert!(inner_module.get_field("value").is_some(), "Inner.value should exist");
+        } else {
+            panic!("Expected Instance field kind");
+        }
+    }
+
+    #[test]
+    fn test_gap2_assignment_creates_constraint() {
+        // Assignment like `r1.resistance = 100ohm +/- 10%` should create a constraint
+        let source = r#"
+module Resistor:
+    resistance: ohm
+
+module App:
+    r1 = new Resistor
+    r1.resistance = 100ohm +/- 10%
+"#;
+        let mut analyzer = Analyzer::new();
+        let result = analyzer.analyze_source(source);
+        assert!(result.is_ok(), "Should parse: {:?}", result.err());
+
+        let design = result.unwrap();
+
+        // The App module should have at least one constraint from the assignment
+        assert!(
+            design.constraint_count() > 0,
+            "Assignment should create a constraint, found {} constraints",
+            design.constraint_count()
+        );
+    }
+
+    #[test]
+    fn test_gap2_simple_assignment_creates_constraint() {
+        let source = r#"
+module Test:
+    value: ohm
+    value = 100ohm
+"#;
+        let mut analyzer = Analyzer::new();
+        let result = analyzer.analyze_source(source);
+        assert!(result.is_ok());
+
+        let design = result.unwrap();
+
+        // Should have a constraint for "value = 100ohm"
+        assert!(design.constraint_count() > 0, "Simple assignment should create constraint");
+    }
+
+    #[test]
+    fn test_gap3_stdlib_import() {
+        // Test that importing from stdlib works
+        let source = r#"
+import Resistor
+
+module App:
+    r1 = new Resistor
+"#;
+        // Get the stdlib path relative to the crate
+        let stdlib_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stdlib");
+
+        let mut analyzer = Analyzer::new()
+            .with_stdlib(stdlib_path);
+
+        let result = analyzer.analyze_source(source);
+        assert!(result.is_ok(), "Stdlib import should work: {:?}", result.err());
+
+        let design = result.unwrap();
+
+        // Resistor module should be in the design
+        assert!(
+            design.modules().iter().any(|m| m.name == "Resistor"),
+            "Resistor module should be loaded from stdlib"
+        );
+
+        // App.r1 should have resolved_type pointing to Resistor
+        let app = design.modules().iter().find(|m| m.name == "App").unwrap();
+        let r1_id = app.get_field("r1").expect("r1 should exist");
+        let r1 = design.get_field(r1_id).unwrap();
+
+        if let ato_ir::FieldKind::Instance { resolved_type, .. } = &r1.kind {
+            assert!(resolved_type.is_some(), "r1 should have resolved type pointing to Resistor");
+        } else {
+            panic!("r1 should be an Instance field");
+        }
+    }
+
+    #[test]
+    fn test_gap5_nested_field_constraint() {
+        let source = r#"
+module Inner:
+    value: ohm
+
+module Outer:
+    inner = new Inner
+    assert inner.value > 0ohm
+"#;
+        let mut analyzer = Analyzer::new();
+        let result = analyzer.analyze_source(source);
+
+        // This should work - nested field access in assertions
+        assert!(result.is_ok(), "Should analyze nested field constraint: {:?}", result.err());
+
+        let design = result.unwrap();
+        assert!(design.constraint_count() > 0, "Should have constraint for inner.value");
+    }
+
+    #[test]
+    fn test_gap6_instance_pin_connection() {
+        let source = r#"
+module Resistor:
+    pin p1
+    pin p2
+
+module App:
+    r1 = new Resistor
+    r2 = new Resistor
+    r1.p2 ~ r2.p1
+"#;
+        let mut analyzer = Analyzer::new();
+        let result = analyzer.analyze_source(source);
+        assert!(result.is_ok(), "Should analyze: {:?}", result.err());
+
+        let design = result.unwrap();
+
+        // App should have a connection between r1.p2 and r2.p1
+        let app = design.modules().iter().find(|m| m.name == "App").unwrap();
+        assert!(
+            !app.connections.is_empty(),
+            "App should have connection between r1.p2 and r2.p1, found {} connections",
+            app.connections.len()
         );
     }
 }

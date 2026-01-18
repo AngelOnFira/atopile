@@ -11,7 +11,7 @@ use ato_ir::{
     QuantityValue, ToleranceValue, ValueExpr, ValueLiteral,
 };
 use ato_parser::{
-    AssertStmt, BinaryOp, BlockDef, CompareOpKind, Comparison,
+    Assignable, AssertStmt, Assignment, AssignTarget, BinaryOp, BlockDef, CompareOpKind, Comparison,
     Connectable, Connection, ConnectionDirection, DirectedConnection, Expression, FieldRef,
     File, ForStmt, Iterable, Literal, PhysicalLiteral, PinDeclaration, PinName,
     Quantity, Slice, Statement, Tolerance,
@@ -105,6 +105,10 @@ impl<'a> Lowerer<'a> {
             Statement::BlockDef(nested) => {
                 // Nested module - lower recursively
                 self.lower_block_def(nested, scope);
+            }
+            Statement::Assignment(assign) => {
+                // Convert physical value assignments to constraints
+                self.lower_assignment(assign, module_id, scope);
             }
             _ => {
                 // Other statements handled during name resolution
@@ -238,6 +242,50 @@ impl<'a> Lowerer<'a> {
         let _constraint_id = self.design.create_constraint(module_id, constraint_expr);
         // Note: Span is not set as the constraints field is private.
         // The span could be added to the create_constraint API if needed.
+    }
+
+    /// Lower an assignment statement to a constraint (for physical values).
+    fn lower_assignment(&mut self, assign: &Assignment, module_id: ModuleId, _scope: &Scope) {
+        // Only convert physical value assignments to constraints
+        let value_literal = match &assign.value {
+            Assignable::Physical(phys) => self.lower_physical_literal(phys),
+            Assignable::Arithmetic(expr) => {
+                // Arithmetic expressions can also be converted to constraints
+                // if they contain physical literals
+                if let Expression::Literal(Literal::Physical(phys)) = expr {
+                    self.lower_physical_literal(phys)
+                } else {
+                    // Non-physical arithmetic - not a constraint
+                    return;
+                }
+            }
+            // String, New, Boolean - not constraints
+            _ => return,
+        };
+
+        // Get the target field path
+        let target_path = match &assign.target {
+            AssignTarget::FieldRef(field_ref) => self.lower_field_ref(field_ref),
+            AssignTarget::Declaration(decl) => {
+                // Declaration target - use the field reference
+                self.lower_field_ref(&decl.field)
+            }
+        };
+
+        // Determine the comparison operator based on the value type
+        let op_kind = match &assign.value {
+            Assignable::Physical(PhysicalLiteral::Quantity(_)) => IrCompareOpKind::Is,
+            Assignable::Physical(PhysicalLiteral::Range(_)) => IrCompareOpKind::Within,
+            Assignable::Physical(PhysicalLiteral::Bilateral(_)) => IrCompareOpKind::Within,
+            _ => IrCompareOpKind::Is,
+        };
+
+        // Create the constraint expression: target IS/WITHIN value
+        let left = ValueExpr::field(target_path);
+        let right = ValueExpr::literal(value_literal);
+        let constraint_expr = ConstraintExpr::compare(left, op_kind, right);
+
+        self.design.create_constraint(module_id, constraint_expr);
     }
 
     /// Lower a comparison to a constraint expression.
