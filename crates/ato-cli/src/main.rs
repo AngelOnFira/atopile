@@ -62,6 +62,49 @@ enum Commands {
         #[command(subcommand)]
         action: PartsAction,
     },
+
+    /// Add a package dependency.
+    Add {
+        /// Package to add (e.g., "atopile/generics", "atopile/generics@1.0.0").
+        #[arg(value_name = "PACKAGE")]
+        package: String,
+
+        /// Path to the project directory.
+        #[arg(short = 'C', long)]
+        project_path: Option<PathBuf>,
+    },
+
+    /// Install all dependencies from ato.yaml.
+    Install {
+        /// Path to the project directory.
+        #[arg(short = 'C', long)]
+        project_path: Option<PathBuf>,
+    },
+
+    /// Update dependencies to latest versions.
+    Update {
+        /// Path to the project directory.
+        #[arg(short = 'C', long)]
+        project_path: Option<PathBuf>,
+    },
+
+    /// Remove a package dependency.
+    Remove {
+        /// Package to remove.
+        #[arg(value_name = "PACKAGE")]
+        package: String,
+
+        /// Path to the project directory.
+        #[arg(short = 'C', long)]
+        project_path: Option<PathBuf>,
+    },
+
+    /// List installed dependencies.
+    List {
+        /// Path to the project directory.
+        #[arg(short = 'C', long)]
+        project_path: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -119,6 +162,21 @@ fn main() -> ExitCode {
             PartsAction::CacheInfo => commands::parts::cache_info(),
             PartsAction::CacheClear => commands::parts::cache_clear(),
         },
+        Commands::Add { package, project_path } => {
+            commands::package::add(&package, project_path.as_deref())
+        }
+        Commands::Install { project_path } => {
+            commands::package::install(project_path.as_deref())
+        }
+        Commands::Update { project_path } => {
+            commands::package::update(project_path.as_deref())
+        }
+        Commands::Remove { package, project_path } => {
+            commands::package::remove(&package, project_path.as_deref())
+        }
+        Commands::List { project_path } => {
+            commands::package::list(project_path.as_deref())
+        }
     };
 
     match result {
