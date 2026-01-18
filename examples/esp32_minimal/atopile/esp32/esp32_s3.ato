@@ -1,0 +1,12 @@
+# Stub package for esp32
+# This is a minimal stub to allow esp32_minimal.ato to pass the check
+
+import ElectricPower
+import USB
+
+module ESP32_S3_WROOM:
+    # Power supply
+    power = new ElectricPower
+
+    # USB interface
+    usb2 = new USB

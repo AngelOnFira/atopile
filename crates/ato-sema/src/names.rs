@@ -247,8 +247,17 @@ impl<'a> NameResolver<'a> {
             Statement::For(for_stmt) => {
                 self.resolve_for_stmt(for_stmt, module_id, scope);
             }
-            Statement::Connection(_) | Statement::DirectedConnection(_) => {
-                // Connections are validated during type checking, not name resolution
+            Statement::Connection(conn) => {
+                // Extract inline signal/pin definitions from connections
+                // e.g., `signal gnd ~ pin 12` creates both gnd and pin 12 as fields
+                self.add_connectable_field(&conn.left, module_id, scope);
+                self.add_connectable_field(&conn.right, module_id, scope);
+            }
+            Statement::DirectedConnection(conn) => {
+                // Extract inline definitions from directed connections
+                for element in &conn.elements {
+                    self.add_connectable_field(element, module_id, scope);
+                }
             }
             Statement::Assert(_) => {
                 // Assertions are validated during type checking
@@ -496,6 +505,53 @@ impl<'a> NameResolver<'a> {
         // For now, just resolve the body
         for stmt in &for_stmt.body {
             self.resolve_block_statement(stmt, module_id, &mut loop_scope);
+        }
+    }
+
+    /// Add a field from a connectable (handles inline signal/pin definitions in connections).
+    fn add_connectable_field(
+        &mut self,
+        connectable: &Connectable,
+        module_id: ModuleId,
+        scope: &mut Scope,
+    ) {
+        match connectable {
+            Connectable::SignalDef(signal) => {
+                // Create signal field if not already defined
+                let name = &signal.name.name;
+                if !scope.is_defined_locally(name) {
+                    let field_id = self.design.add_field(module_id, name, ato_ir::FieldKind::signal());
+                    if let Some(field) = self.design.get_field_mut(field_id) {
+                        field.span = Some(signal.span);
+                    }
+                    scope.define_field(name, field_id, Some(signal.span));
+                }
+            }
+            Connectable::PinDef(pin) => {
+                // Create pin field if not already defined
+                let (name, kind) = match &pin.name {
+                    ato_parser::PinName::Identifier(id) => {
+                        (id.name.clone(), ato_ir::FieldKind::pin(&id.name))
+                    }
+                    ato_parser::PinName::Number(num) => {
+                        let n = num.value.parse::<u32>().unwrap_or(0);
+                        (num.value.clone(), ato_ir::FieldKind::pin_number(n))
+                    }
+                    ato_parser::PinName::String(s) => {
+                        (s.value.clone(), ato_ir::FieldKind::pin_string(&s.value))
+                    }
+                };
+                if !scope.is_defined_locally(&name) {
+                    let field_id = self.design.add_field(module_id, &name, kind);
+                    if let Some(field) = self.design.get_field_mut(field_id) {
+                        field.span = Some(pin.span);
+                    }
+                    scope.define_field(&name, field_id, Some(pin.span));
+                }
+            }
+            Connectable::FieldRef(_) => {
+                // Field references don't create new fields
+            }
         }
     }
 }

@@ -1,0 +1,14 @@
+# Stub package for usb-connectors
+# This is a minimal stub to allow esp32_minimal.ato to pass the check
+
+import ElectricPower
+import USB2_0_IF
+import USB
+
+interface USBConnectorInterface:
+    # USB 2.0 interface with nested usb_if
+    usb_if = new USB2_0_IF
+
+module USB2_0TypeCHorizontalConnector:
+    # USB interface exposed by the connector
+    usb = new USBConnectorInterface

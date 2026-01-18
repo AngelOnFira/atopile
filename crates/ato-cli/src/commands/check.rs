@@ -242,4 +242,142 @@ mod tests {
         let result = run(file.path(), true);
         assert!(result.is_ok());
     }
+
+    // ===== Integration tests for example .ato files =====
+    //
+    // These tests validate that the example .ato files in the repository
+    // pass semantic analysis. They must be run from the repository root.
+    //
+    // Note: esp32_minimal.ato is excluded because it requires external
+    // packages (atopile/usb-connectors, atopile/ti-tlv75901, atopile/esp32)
+    // that aren't installed in the test environment.
+
+    fn find_examples_dir() -> Option<PathBuf> {
+        // Try to find examples directory relative to current working dir or manifest
+        let cwd = std::env::current_dir().ok()?;
+
+        // Check if we're in the repo root
+        if cwd.join("examples").exists() {
+            return Some(cwd.join("examples"));
+        }
+
+        // Walk up to find the repo root
+        let mut current = cwd.as_path();
+        for _ in 0..10 {
+            let examples = current.join("examples");
+            if examples.exists() {
+                return Some(examples);
+            }
+            current = current.parent()?;
+        }
+
+        None
+    }
+
+    #[test]
+    fn test_example_equations() {
+        let Some(examples_dir) = find_examples_dir() else {
+            println!("Skipping test: examples directory not found");
+            return;
+        };
+        let path = examples_dir.join("equations/equations.ato");
+        if !path.exists() {
+            println!("Skipping test: {} not found", path.display());
+            return;
+        }
+        let result = run(&path, false);
+        assert!(result.is_ok(), "equations.ato should pass: {:?}", result);
+    }
+
+    #[test]
+    fn test_example_pick_parts() {
+        let Some(examples_dir) = find_examples_dir() else {
+            println!("Skipping test: examples directory not found");
+            return;
+        };
+        let path = examples_dir.join("pick_parts/pick_parts.ato");
+        if !path.exists() {
+            println!("Skipping test: {} not found", path.display());
+            return;
+        }
+        let result = run(&path, false);
+        assert!(result.is_ok(), "pick_parts.ato should pass: {:?}", result);
+    }
+
+    #[test]
+    fn test_example_quickstart() {
+        let Some(examples_dir) = find_examples_dir() else {
+            println!("Skipping test: examples directory not found");
+            return;
+        };
+        let path = examples_dir.join("quickstart/quickstart.ato");
+        if !path.exists() {
+            println!("Skipping test: {} not found", path.display());
+            return;
+        }
+        let result = run(&path, false);
+        assert!(result.is_ok(), "quickstart.ato should pass: {:?}", result);
+    }
+
+    #[test]
+    fn test_example_led_badge() {
+        let Some(examples_dir) = find_examples_dir() else {
+            println!("Skipping test: examples directory not found");
+            return;
+        };
+        let path = examples_dir.join("led_badge/led_badge.ato");
+        if !path.exists() {
+            println!("Skipping test: {} not found", path.display());
+            return;
+        }
+        let result = run(&path, false);
+        assert!(result.is_ok(), "led_badge.ato should pass: {:?}", result);
+    }
+
+    #[test]
+    fn test_example_layout_reuse() {
+        let Some(examples_dir) = find_examples_dir() else {
+            println!("Skipping test: examples directory not found");
+            return;
+        };
+        let path = examples_dir.join("layout_reuse/layout_reuse.ato");
+        if !path.exists() {
+            println!("Skipping test: {} not found", path.display());
+            return;
+        }
+        let result = run(&path, false);
+        assert!(result.is_ok(), "layout_reuse.ato should pass: {:?}", result);
+    }
+
+    #[test]
+    fn test_example_i2c() {
+        let Some(examples_dir) = find_examples_dir() else {
+            println!("Skipping test: examples directory not found");
+            return;
+        };
+        let path = examples_dir.join("i2c/i2c.ato");
+        if !path.exists() {
+            println!("Skipping test: {} not found", path.display());
+            return;
+        }
+        let result = run(&path, false);
+        assert!(result.is_ok(), "i2c.ato should pass: {:?}", result);
+    }
+
+    #[test]
+    fn test_example_esp32_minimal() {
+        let Some(examples_dir) = find_examples_dir() else {
+            println!("Skipping test: examples directory not found");
+            return;
+        };
+        let path = examples_dir.join("esp32_minimal/esp32_minimal.ato");
+        if !path.exists() {
+            println!("Skipping test: {} not found", path.display());
+            return;
+        }
+        // Note: This example uses local stub packages in the atopile/ subdirectory
+        // to avoid requiring external package installation
+        let result = run(&path, false);
+        assert!(result.is_ok(), "esp32_minimal.ato should pass: {:?}", result);
+    }
 }

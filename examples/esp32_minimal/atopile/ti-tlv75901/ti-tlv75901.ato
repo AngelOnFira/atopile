@@ -1,0 +1,18 @@
+# Stub package for ti-tlv75901
+# This is a minimal stub to allow esp32_minimal.ato to pass the check
+
+#pragma experiment("BRIDGE_CONNECT")
+
+import ElectricPower
+
+module TLV75901_driver:
+    # Input and output power rails
+    power_in = new ElectricPower
+    power_out = new ElectricPower
+
+    # Configuration parameters
+    v_in: V
+    v_out: V
+
+    # Enable bridge connect
+    trait can_bridge

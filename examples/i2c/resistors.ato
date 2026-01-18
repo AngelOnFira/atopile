@@ -1,0 +1,33 @@
+# I2C Pullup resistors module
+# Local file for the i2c example
+
+import I2C
+import Resistor
+import ElectricPower
+
+module I2CPullup:
+    """
+    I2C pull-up resistors for SDA and SCL lines
+    """
+    i2c = new I2C
+    power = new ElectricPower
+
+    # Pull-up resistors for SDA and SCL
+    sda_pullup = new Resistor
+    scl_pullup = new Resistor
+
+    # Configure resistor values (typical I2C pull-up values)
+    sda_pullup.resistance = 4.7kohm +/- 5%
+    scl_pullup.resistance = 4.7kohm +/- 5%
+
+    # Connect pull-ups to power rail
+    power.hv ~ sda_pullup.unnamed[0]
+    power.hv ~ scl_pullup.unnamed[0]
+
+    # Connect pull-ups to I2C lines
+    sda_pullup.unnamed[1] ~ i2c.sda.line
+    scl_pullup.unnamed[1] ~ i2c.scl.line
+
+    # Set I2C reference power
+    i2c.sda.reference ~ power
+    i2c.scl.reference ~ power

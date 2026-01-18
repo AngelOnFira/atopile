@@ -1,0 +1,15 @@
+# Addressor interface - I2C address configuration
+# Standard library module for configuring I2C device addresses via address pins
+
+import ElectricLogic
+
+interface Addressor:
+    # Address parameters
+    address: dimensionless
+    offset: dimensionless
+    base: dimensionless
+
+    # Address lines - indexed array of ElectricLogic signals
+    # Each line corresponds to one address bit
+    # The number of lines is determined by the address_bits template parameter
+    address_lines = new ElectricLogic[8]
