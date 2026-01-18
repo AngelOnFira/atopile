@@ -464,6 +464,7 @@ wasm-bindgen = "0.2" # WASM bindings (future)
 
 | Priority | Prompt | Impact |
 |----------|--------|--------|
+| **BLOCKER** | 30-35 - Gap Fixes | Core compiler doesn't produce correct output |
 | **High** | 28 - Library Mapping | Makes KiCad output actually usable |
 | **High** | 24 - Complete Stdlib | Enables real projects |
 | **High** | 23 - LCSC Integration | Automatic part selection |
@@ -471,6 +472,229 @@ wasm-bindgen = "0.2" # WASM bindings (future)
 | **Medium** | 25 - Package Manager | Dependency management |
 | **Medium** | 29 - Layout Preservation | Production workflow |
 | **Lower** | 27 - WASM Build | Playground/web use |
+
+---
+
+## Critical Gap Fixes (Prompts 30-35)
+
+These prompts fix critical gaps discovered during testing that prevent the compiler from producing correct output for real projects. **These must be completed before the compiler is usable.**
+
+See `docs/rust-compiler-gaps.md` for detailed analysis and failing test cases.
+
+---
+
+### Prompt 30: Instance Field Expansion
+
+When `x = new Type` is processed, the instance's type must be resolved and nested field access must work.
+
+#### Current State
+- `field_kind_from_new` in names.rs creates Instance fields but ignores the scope parameter
+- `resolved_type` is left as None
+- Post-creation resolution attempts to fix this but is fragile
+
+#### Requirements
+
+1. Fix `field_kind_from_new` to use scope and resolve type immediately
+2. Ensure resolved_type is populated for all Instance fields
+3. Nested field access like `x.field` must resolve through the instance's type
+4. Handle instance arrays (`new Type[n]`) correctly
+
+#### Key Files
+- crates/ato-sema/src/names.rs (lines 354-388)
+- crates/ato-sema/src/types.rs (resolve_nested_field)
+
+#### Verification
+```bash
+cargo test -p ato-sema test_gap1_instance_field_expansion -- --ignored
+```
+
+#### Completion Promise
+```
+<promise>GAP1_INSTANCE_EXPANSION_COMPLETE</promise>
+```
+When:
+- Test `test_gap1_instance_field_expansion` passes
+- Instance fields have resolved_type populated
+- Nested field access works for instance.field patterns
+
+---
+
+### Prompt 31: Assignment-to-Constraint Conversion
+
+Assignments like `x = 100ohm +/- 10%` must create constraints in the IR.
+
+#### Current State
+- In lower.rs, Statement::Assignment falls into the catch-all `_ => {}` case and is ignored
+- In names.rs, assignment values are examined for field kind detection but then discarded
+
+#### Requirements
+
+1. In lower.rs, handle Statement::Assignment in lower_block_statement
+2. Convert assignments with physical values to Constraint with CompareOpKind::Is or Within
+3. For bilateral tolerances (100ohm +/- 10%), use CompareOpKind::Within
+4. Store the constraint in the module's constraints list
+5. Handle nested field assignments like `r1.resistance = ...`
+
+#### Key Files
+- crates/ato-sema/src/lower.rs (lines 90-113)
+- crates/ato-ir/src/constraint.rs
+
+#### Verification
+```bash
+cargo test -p ato-sema test_gap2 -- --ignored
+```
+
+#### Completion Promise
+```
+<promise>GAP2_ASSIGNMENT_CONSTRAINTS_COMPLETE</promise>
+```
+When:
+- Tests `test_gap2_assignment_creates_constraint` and `test_gap2_simple_assignment_creates_constraint` pass
+- Assignments create IR constraints
+- Solver receives assignment-derived constraints
+
+---
+
+### Prompt 32: Import Resolution and Stdlib Loading
+
+Imports must load modules and make them available for `new` expressions.
+
+#### Current State
+- analyzer.rs indexes stdlib (line 142) but never merges the registry into the scope
+- Imported types may not be available when field_kind_from_new runs
+
+#### Requirements
+
+1. After indexing stdlib, add stdlib modules to the initial scope
+2. When processing imports, load the file and add modules to scope BEFORE name resolution
+3. Ensure imported modules are available when processing `new ImportedType`
+4. Handle transitive imports (imported module imports another module)
+5. Track import errors properly
+
+#### Key Files
+- crates/ato-sema/src/analyzer.rs (lines 142-267)
+- crates/ato-sema/src/resolution.rs
+
+#### Verification
+```bash
+cargo test -p ato-sema test_stdlib -- --ignored
+```
+
+#### Completion Promise
+```
+<promise>GAP3_IMPORT_RESOLUTION_COMPLETE</promise>
+```
+When:
+- Stdlib modules (Resistor, Capacitor, etc.) are available after import
+- `new Resistor` resolves correctly after `import Resistor`
+- File-based imports work
+
+---
+
+### Prompt 33: Nested Field Access in Constraints
+
+Constraint collector must resolve paths like `instance.field` through instance types.
+
+#### Current State
+- resolve_field_unit() in constraint_collector.rs only looks at the first part of a path
+- For `r1.resistance`, it finds `r1` but cannot traverse into its type to find `resistance`
+
+#### Requirements
+
+1. In constraint_collector.rs, extend resolve_field_unit to handle multi-part paths
+2. When path[0] is an Instance field, get its resolved_type and look up path[1] in that module
+3. Continue recursively for deeper paths (a.b.c)
+4. Track the full path for constraint variable naming
+5. Handle array instances (r[0].value)
+
+#### Key Files
+- crates/ato-sema/src/constraint_collector.rs (resolve_field_unit around line 277)
+- crates/ato-sema/src/types.rs (resolve_nested_field)
+
+#### Verification
+```bash
+cargo test -p ato-sema test_gap5 -- --ignored
+```
+
+#### Completion Promise
+```
+<promise>GAP5_NESTED_FIELD_ACCESS_COMPLETE</promise>
+```
+When:
+- Test `test_gap5_nested_field_constraint` passes
+- Constraints on `instance.parameter` are correctly collected
+- Solver receives nested field constraints
+
+---
+
+### Prompt 34: Connection Lowering for Instance Pins
+
+Connections between instance pins must be properly lowered.
+
+#### Current State
+- lower_connectable() creates FieldPath but doesn't verify that nested paths (r1.p1) are valid
+- Doesn't verify they reference actual pins through instance types
+
+#### Requirements
+
+1. When lowering a connection like `r1.p2 ~ r2.p1`, verify r1 is an instance
+2. Resolve r1's type and verify p2 exists as a pin in that type
+3. Create ConnectionEndpoint with proper FieldPath representing instance.pin
+4. Handle inline signal definitions in connections
+5. Track connection span for error reporting
+
+#### Key Files
+- crates/ato-sema/src/lower.rs (lower_connectable around line 145)
+
+#### Verification
+```bash
+cargo test -p ato-sema test_gap6 -- --ignored
+```
+
+#### Completion Promise
+```
+<promise>GAP6_CONNECTION_LOWERING_COMPLETE</promise>
+```
+When:
+- Test `test_gap6_instance_pin_connection` passes
+- Connections between instance pins create proper IR connections
+- Connection graph is built correctly
+
+---
+
+### Prompt 35: Netlist Component Extraction
+
+NetlistBuilder must extract component instances, not module definitions.
+
+#### Current State
+- collect_components() in netlist.rs iterates design.modules() and creates components for ANY module with pins
+- This creates phantom components for abstract modules and misses actual instances
+
+#### Requirements
+
+1. Start from entry module and traverse instance fields
+2. For each Instance field with resolved_type, create a component
+3. Track instance path for proper reference naming (r1, divider.r1, etc.)
+4. Extract footprint from module properties/traits
+5. Build nets by following connections through instance boundaries
+6. Map instance.pin references to component.pin in netlist
+
+#### Key Files
+- crates/ato-export/src/netlist.rs (lines 240-356)
+
+#### Verification
+```bash
+cargo test -p ato-export test_gap4 -- --ignored
+```
+
+#### Completion Promise
+```
+<promise>GAP4_NETLIST_EXTRACTION_COMPLETE</promise>
+```
+When:
+- Tests `test_gap4_netlist_extracts_instances_not_definitions` and `test_gap4_netlist_instance_connections` pass
+- Netlist contains only instantiated components
+- Nets correctly connect component pins
 
 ---
 

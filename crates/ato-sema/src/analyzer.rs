@@ -1035,4 +1035,121 @@ module App:
             app.connections.len()
         );
     }
+
+    #[test]
+    #[ignore] // Gap 7: Transitive Import Resolution - not yet implemented
+    fn test_gap7_transitive_package_imports() {
+        // Test that importing from a package correctly resolves the package's own imports
+        use tempfile::TempDir;
+
+        // Create a mock package structure
+        let project_dir = TempDir::new().unwrap();
+
+        // Create stdlib with a trait
+        let stdlib_dir = project_dir.path().join("stdlib");
+        std::fs::create_dir_all(&stdlib_dir).unwrap();
+        std::fs::write(stdlib_dir.join("traits.ato"), r#"
+interface can_bridge_by_name:
+    pass
+"#).unwrap();
+
+        // Create a package in .ato/modules
+        let package_dir = project_dir.path().join(".ato/modules/testpkg/widgets");
+        std::fs::create_dir_all(&package_dir).unwrap();
+
+        // Package has its own stdlib import
+        std::fs::write(package_dir.join("widgets.ato"), r#"
+import can_bridge_by_name
+
+module Widget:
+    pin input
+    pin output
+    trait can_bridge_by_name
+"#).unwrap();
+
+        // Main file imports from package
+        let src_dir = project_dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let main_path = src_dir.join("main.ato");
+        std::fs::write(&main_path, r#"
+from "testpkg/widgets/widgets.ato" import Widget
+
+module App:
+    w = new Widget
+"#).unwrap();
+
+        let source = std::fs::read_to_string(&main_path).unwrap();
+        let mut analyzer = Analyzer::new()
+            .with_root_dir(project_dir.path())
+            .with_stdlib(&stdlib_dir);
+
+        let result = analyzer.analyze_file(&source, &main_path);
+
+        assert!(result.is_ok(), "Transitive imports should resolve. Errors: {:?}", result.err());
+
+        let design = result.unwrap();
+
+        // Widget should be available
+        assert!(
+            design.modules().iter().any(|m| m.name == "Widget"),
+            "Widget module should be imported from package"
+        );
+
+        // App.w should have resolved_type
+        let app = design.modules().iter().find(|m| m.name == "App").unwrap();
+        let w_id = app.get_field("w").expect("w field should exist");
+        let w_field = design.get_field(w_id).unwrap();
+
+        if let ato_ir::FieldKind::Instance { resolved_type, .. } = &w_field.kind {
+            assert!(resolved_type.is_some(), "w should have resolved_type pointing to Widget");
+        } else {
+            panic!("w should be an Instance field");
+        }
+    }
+
+    #[test]
+    #[ignore] // Gap 7: Package relative imports - not yet implemented
+    fn test_gap7_package_relative_imports() {
+        // Test that a package can import from its own relative paths
+        use tempfile::TempDir;
+
+        let project_dir = TempDir::new().unwrap();
+
+        // Create package with internal structure
+        let package_dir = project_dir.path().join(".ato/modules/testpkg/mydriver");
+        let parts_dir = package_dir.join("parts/MyPart");
+        std::fs::create_dir_all(&parts_dir).unwrap();
+
+        // Internal part definition
+        std::fs::write(parts_dir.join("MyPart.ato"), r#"
+component MyPart_package:
+    pin 1
+    pin 2
+"#).unwrap();
+
+        // Driver imports from relative path
+        std::fs::write(package_dir.join("mydriver.ato"), r#"
+from "parts/MyPart/MyPart.ato" import MyPart_package
+
+module MyDriver from MyPart_package:
+    power_in = new Electrical
+"#).unwrap();
+
+        // Main file
+        let main_path = project_dir.path().join("main.ato");
+        std::fs::write(&main_path, r#"
+from "testpkg/mydriver/mydriver.ato" import MyDriver
+
+module App:
+    drv = new MyDriver
+"#).unwrap();
+
+        let source = std::fs::read_to_string(&main_path).unwrap();
+        let mut analyzer = Analyzer::new()
+            .with_root_dir(project_dir.path());
+
+        let result = analyzer.analyze_file(&source, &main_path);
+
+        assert!(result.is_ok(), "Package relative imports should resolve. Errors: {:?}", result.err());
+    }
 }
