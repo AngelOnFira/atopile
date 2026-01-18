@@ -1115,6 +1115,14 @@ module App:
 
         let project_dir = TempDir::new().unwrap();
 
+        // Create stdlib with Electrical
+        let stdlib_dir = project_dir.path().join("stdlib");
+        std::fs::create_dir_all(&stdlib_dir).unwrap();
+        std::fs::write(stdlib_dir.join("electrical.ato"), r#"
+interface Electrical:
+    pass
+"#).unwrap();
+
         // Create package with internal structure
         let package_dir = project_dir.path().join(".ato/modules/testpkg/mydriver");
         let parts_dir = package_dir.join("parts/MyPart");
@@ -1129,6 +1137,7 @@ component MyPart_package:
 
         // Driver imports from relative path
         std::fs::write(package_dir.join("mydriver.ato"), r#"
+import Electrical
 from "parts/MyPart/MyPart.ato" import MyPart_package
 
 module MyDriver from MyPart_package:
@@ -1146,10 +1155,129 @@ module App:
 
         let source = std::fs::read_to_string(&main_path).unwrap();
         let mut analyzer = Analyzer::new()
-            .with_root_dir(project_dir.path());
+            .with_root_dir(project_dir.path())
+            .with_stdlib(&stdlib_dir);
 
         let result = analyzer.analyze_file(&source, &main_path);
 
         assert!(result.is_ok(), "Package relative imports should resolve. Errors: {:?}", result.err());
+    }
+
+    #[test]
+    #[ignore] // Gap 7: Real-world buttons package pattern
+    fn test_gap7_buttons_package_pattern() {
+        // Test the real-world pattern from atopile/buttons package
+        // buttons.ato imports:
+        //   - Electrical from stdlib
+        //   - can_bridge_by_name from stdlib
+        //   - ALPSALPINE_SKRPACE010_package from relative path
+        // The relative part file (ALPSALPINE_SKRPACE010.ato) imports:
+        //   - has_designator_prefix from stdlib
+        //   - is_atomic_part from stdlib
+        use tempfile::TempDir;
+
+        let project_dir = TempDir::new().unwrap();
+
+        // Create comprehensive stdlib
+        let stdlib_dir = project_dir.path().join("stdlib");
+        std::fs::create_dir_all(&stdlib_dir).unwrap();
+        std::fs::write(stdlib_dir.join("electrical.ato"), r#"
+interface Electrical:
+    pass
+"#).unwrap();
+        std::fs::write(stdlib_dir.join("traits.ato"), r#"
+interface can_bridge_by_name:
+    pass
+
+interface has_designator_prefix:
+    pass
+
+interface is_atomic_part:
+    pass
+
+interface has_part_picked:
+    pass
+"#).unwrap();
+
+        // Create the package structure mimicking atopile/buttons
+        let package_dir = project_dir.path().join(".ato/modules/atopile/buttons");
+        let parts_dir = package_dir.join("parts/ALPSALPINE_SKRPACE010");
+        std::fs::create_dir_all(&parts_dir).unwrap();
+
+        // Part file with its own stdlib imports
+        std::fs::write(parts_dir.join("ALPSALPINE_SKRPACE010.ato"), r#"
+import has_designator_prefix
+import is_atomic_part
+
+component ALPSALPINE_SKRPACE010_package:
+    trait is_atomic_part
+    trait has_designator_prefix
+    pin 1
+    pin 2
+    pin 3
+    pin 4
+"#).unwrap();
+
+        // Main buttons.ato with stdlib imports + relative import
+        std::fs::write(package_dir.join("buttons.ato"), r#"
+import Electrical
+import can_bridge_by_name
+
+from "parts/ALPSALPINE_SKRPACE010/ALPSALPINE_SKRPACE010.ato" import ALPSALPINE_SKRPACE010_package
+
+module Button:
+    input = new Electrical
+    output = new Electrical
+    trait can_bridge_by_name
+
+module ALPSALPINE_SKRPACE010_button_driver from Button:
+    package = new ALPSALPINE_SKRPACE010_package
+    input ~ package.1
+    output ~ package.3
+
+module VerticalButton from ALPSALPINE_SKRPACE010_button_driver:
+    pass
+"#).unwrap();
+
+        // Main project file that imports from the package
+        let src_dir = project_dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let main_path = src_dir.join("main.ato");
+        std::fs::write(&main_path, r#"
+from "atopile/buttons/buttons.ato" import VerticalButton
+
+module App:
+    btn = new VerticalButton
+"#).unwrap();
+
+        let source = std::fs::read_to_string(&main_path).unwrap();
+        let mut analyzer = Analyzer::new()
+            .with_root_dir(project_dir.path())
+            .with_stdlib(&stdlib_dir);
+
+        let result = analyzer.analyze_file(&source, &main_path);
+
+        assert!(result.is_ok(), "Buttons package pattern should work. Errors: {:?}", result.err());
+
+        let design = result.unwrap();
+
+        // All modules should be present
+        let module_names: Vec<&str> = design.modules().iter().map(|m| m.name.as_str()).collect();
+        assert!(module_names.contains(&"VerticalButton"), "VerticalButton missing. Found: {:?}", module_names);
+        assert!(module_names.contains(&"ALPSALPINE_SKRPACE010_button_driver"), "Driver missing. Found: {:?}", module_names);
+        assert!(module_names.contains(&"Button"), "Button missing. Found: {:?}", module_names);
+        assert!(module_names.contains(&"ALPSALPINE_SKRPACE010_package"), "Package missing. Found: {:?}", module_names);
+        assert!(module_names.contains(&"App"), "App missing. Found: {:?}", module_names);
+
+        // App.btn should have resolved type
+        let app = design.modules().iter().find(|m| m.name == "App").unwrap();
+        let btn_id = app.get_field("btn").expect("btn field should exist");
+        let btn_field = design.get_field(btn_id).unwrap();
+
+        if let ato_ir::FieldKind::Instance { resolved_type, .. } = &btn_field.kind {
+            assert!(resolved_type.is_some(), "btn should have resolved_type pointing to VerticalButton");
+        } else {
+            panic!("btn should be an Instance field");
+        }
     }
 }
