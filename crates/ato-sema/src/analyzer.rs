@@ -342,8 +342,10 @@ impl Analyzer {
         let mut import_scope = Scope::new();
         self.resolve_and_merge_imports(&ast, path, resolver, design, &mut import_scope);
 
-        // Extract all top-level definitions (exports)
+        // Extract all top-level definitions (exports) - build a map for inheritance lookup
         let mut exports = Vec::new();
+        let mut blocks_by_name: std::collections::HashMap<String, &ato_parser::BlockDef> = std::collections::HashMap::new();
+
         for stmt in &ast.statements {
             if let Statement::BlockDef(block) = stmt {
                 let kind = match block.kind {
@@ -352,20 +354,111 @@ impl Analyzer {
                     ato_parser::BlockKind::Component => ModuleKind::Component,
                 };
                 exports.push((block.name.name.clone(), kind));
-
-                // If this is the symbol we're importing, add it to scope
-                if block.name.name == import_name {
-                    let module_id = design.create_module(&block.name.name, kind);
-                    scope.define_module(&block.name.name, module_id, Some(block.span));
-
-                    // Analyze the imported module's body with its import scope
-                    self.analyze_imported_module_with_scope(&ast, &block.name.name, module_id, design, &import_scope);
-                }
+                blocks_by_name.insert(block.name.name.clone(), block);
             }
+        }
+
+        // Find the requested module and recursively process its inheritance chain
+        if blocks_by_name.contains_key(import_name) {
+            // Process inheritance chain - need to add base classes first
+            self.process_module_with_inheritance(
+                &ast,
+                import_name,
+                &blocks_by_name,
+                &import_scope,
+                resolver,
+                design,
+                scope,
+                &mut std::collections::HashSet::new(),
+            );
         }
 
         // Cache the exports
         self.file_cache.insert(path.to_path_buf(), exports);
+    }
+
+    /// Process a module and its inheritance chain, ensuring base classes are added first.
+    fn process_module_with_inheritance(
+        &mut self,
+        ast: &File,
+        module_name: &str,
+        blocks_by_name: &std::collections::HashMap<String, &ato_parser::BlockDef>,
+        import_scope: &Scope,
+        resolver: &mut Resolver,
+        design: &mut Design,
+        scope: &mut Scope,
+        visited: &mut std::collections::HashSet<String>,
+    ) {
+        // Prevent infinite recursion
+        if visited.contains(module_name) {
+            return;
+        }
+        visited.insert(module_name.to_string());
+
+        // Check if already in design
+        if design.find_module(module_name).is_some() {
+            // Already exists, just add to scope if not already there
+            if scope.lookup(module_name).is_none() {
+                if let Some(module_id) = design.find_module(module_name) {
+                    scope.define_module(module_name, module_id, None);
+                }
+            }
+            return;
+        }
+
+        // Get the block definition
+        let block = match blocks_by_name.get(module_name) {
+            Some(b) => *b,
+            None => {
+                // Module not in this file - check if it's in import_scope (came from an import)
+                if let Some(binding) = import_scope.lookup(module_name) {
+                    if let Some(module_id) = binding.as_module() {
+                        scope.define_module(module_name, module_id, None);
+                    }
+                }
+                return;
+            }
+        };
+
+        // Process super_type first (if any)
+        if let Some(super_ref) = &block.super_type {
+            let super_name = super_ref.parts.last()
+                .map(|p| p.name.clone())
+                .unwrap_or_default();
+
+            // First check if super type is in import_scope (imported)
+            if let Some(binding) = import_scope.lookup(&super_name) {
+                if let Some(module_id) = binding.as_module() {
+                    // Super type was imported - add to current scope
+                    scope.define_module(&super_name, module_id, None);
+                }
+            } else {
+                // Super type might be in the same file - process it first
+                self.process_module_with_inheritance(
+                    ast,
+                    &super_name,
+                    blocks_by_name,
+                    import_scope,
+                    resolver,
+                    design,
+                    scope,
+                    visited,
+                );
+            }
+        }
+
+        // Now add this module
+        let kind = match block.kind {
+            ato_parser::BlockKind::Module => ModuleKind::Module,
+            ato_parser::BlockKind::Interface => ModuleKind::Interface,
+            ato_parser::BlockKind::Component => ModuleKind::Component,
+        };
+
+        let module_id = design.create_module(&block.name.name, kind);
+        scope.define_module(&block.name.name, module_id, Some(block.span));
+
+        // Analyze the module's body
+        self.analyze_imported_module_with_scope(ast, &block.name.name, module_id, design, import_scope);
     }
 
     /// Analyze an imported module to populate its fields (legacy, no scope).
@@ -1037,7 +1130,6 @@ module App:
     }
 
     #[test]
-    #[ignore] // Gap 7: Transitive Import Resolution - not yet implemented
     fn test_gap7_transitive_package_imports() {
         // Test that importing from a package correctly resolves the package's own imports
         use tempfile::TempDir;
@@ -1108,7 +1200,6 @@ module App:
     }
 
     #[test]
-    #[ignore] // Gap 7: Package relative imports - not yet implemented
     fn test_gap7_package_relative_imports() {
         // Test that a package can import from its own relative paths
         use tempfile::TempDir;
@@ -1164,7 +1255,6 @@ module App:
     }
 
     #[test]
-    #[ignore] // Gap 7: Real-world buttons package pattern
     fn test_gap7_buttons_package_pattern() {
         // Test the real-world pattern from atopile/buttons package
         // buttons.ato imports:
