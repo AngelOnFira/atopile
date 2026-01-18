@@ -30,9 +30,28 @@ impl<'a> NameResolver<'a> {
     }
 
     /// Resolve names in a file, populating the design.
+    /// Uses a two-pass approach to handle forward references:
+    /// 1. First pass: Register all module/interface/component declarations
+    /// 2. Second pass: Resolve module bodies (fields, connections, etc.)
     pub fn resolve(&mut self, file: &File, scope: &mut Scope) -> Result<(), Vec<SemaError>> {
+        // Pass 1: Register all top-level declarations (modules, interfaces, components)
+        // This allows forward references within the same file
         for stmt in &file.statements {
-            self.resolve_statement(stmt, scope);
+            if let Statement::BlockDef(block) = stmt {
+                self.register_block_declaration(block, scope);
+            }
+        }
+
+        // Pass 2: Resolve non-block statements and block bodies
+        for stmt in &file.statements {
+            match stmt {
+                Statement::BlockDef(block) => {
+                    self.resolve_block_body(block, scope);
+                }
+                _ => {
+                    self.resolve_statement(stmt, scope);
+                }
+            }
         }
 
         if self.errors.has_errors() {
@@ -42,16 +61,93 @@ impl<'a> NameResolver<'a> {
         }
     }
 
+    /// Register a block declaration without processing its body (Pass 1).
+    fn register_block_declaration(&mut self, block: &BlockDef, scope: &mut Scope) {
+        // Convert BlockKind to ModuleKind
+        let kind = match block.kind {
+            BlockKind::Module => ModuleKind::Module,
+            BlockKind::Component => ModuleKind::Component,
+            BlockKind::Interface => ModuleKind::Interface,
+        };
+
+        // Create the module
+        let module_id = self.design.create_module(&block.name.name, kind);
+
+        // Set source info
+        if let Some(module) = self.design.get_module_mut(module_id) {
+            module.span = Some(block.span);
+        }
+
+        // Check for duplicate definition
+        if scope.is_defined_locally(&block.name.name) {
+            let (_, first_span) = scope.lookup_with_span(&block.name.name).unwrap();
+            self.errors.push(SemaError::duplicate_definition(
+                &block.name.name,
+                Some(block.span),
+                first_span,
+            ));
+            return;
+        }
+
+        // Register in parent scope
+        scope.define_module(&block.name.name, module_id, Some(block.span));
+
+        // Also register nested block declarations recursively
+        for stmt in &block.body {
+            if let Statement::BlockDef(nested) = stmt {
+                // Create a temporary child scope for nested registrations
+                let mut child_scope = scope.child_with_module(module_id);
+                self.register_block_declaration(nested, &mut child_scope);
+            }
+        }
+    }
+
+    /// Resolve a block body after all declarations are registered (Pass 2).
+    fn resolve_block_body(&mut self, block: &BlockDef, scope: &Scope) {
+        // Look up the module (it should have been registered in Pass 1)
+        let module_id = if let Some(Binding::Module(id)) = scope.lookup(&block.name.name) {
+            *id
+        } else {
+            return; // Module not found - error was already reported
+        };
+
+        // Create a child scope for the block body
+        let mut block_scope = scope.child_with_module(module_id);
+
+        // Pre-populate the block scope with nested module declarations from Pass 1
+        // This ensures nested modules can be found during body resolution
+        for stmt in &block.body {
+            if let Statement::BlockDef(nested) = stmt {
+                // Look up the nested module by name from the design
+                if let Some(nested_id) = self.design.find_module(&nested.name.name) {
+                    block_scope.define_module(&nested.name.name, nested_id, Some(nested.span));
+                }
+            }
+        }
+
+        // Handle inheritance (from clause) - now all types should be available
+        if let Some(super_ref) = &block.super_type {
+            self.resolve_inheritance(module_id, super_ref, scope);
+        }
+
+        // Resolve body statements
+        for stmt in &block.body {
+            self.resolve_block_statement(stmt, module_id, &mut block_scope);
+        }
+    }
+
     /// Take the errors out of the resolver.
     pub fn take_errors(&mut self) -> Vec<SemaError> {
         std::mem::take(&mut self.errors).into_errors()
     }
 
-    /// Resolve a single statement.
+    /// Resolve a single statement (non-block statements only).
+    /// Block definitions are handled separately via register_block_declaration + resolve_block_body.
     fn resolve_statement(&mut self, stmt: &Statement, scope: &mut Scope) {
         match stmt {
-            Statement::BlockDef(block) => {
-                self.resolve_block_def(block, scope);
+            Statement::BlockDef(_) => {
+                // Block definitions are handled by the two-pass approach in resolve()
+                // This case handles blocks that appear in unexpected places
             }
             Statement::Import(import) => {
                 // Register imports in scope, but skip if already resolved by resolve_and_merge_imports
@@ -96,50 +192,6 @@ impl<'a> NameResolver<'a> {
         }
     }
 
-    /// Resolve a block definition (module/component/interface).
-    fn resolve_block_def(&mut self, block: &BlockDef, scope: &mut Scope) {
-        // Convert BlockKind to ModuleKind
-        let kind = match block.kind {
-            BlockKind::Module => ModuleKind::Module,
-            BlockKind::Component => ModuleKind::Component,
-            BlockKind::Interface => ModuleKind::Interface,
-        };
-
-        // Create the module
-        let module_id = self.design.create_module(&block.name.name, kind);
-
-        // Set source info
-        if let Some(module) = self.design.get_module_mut(module_id) {
-            module.span = Some(block.span);
-        }
-
-        // Check for duplicate definition
-        if scope.is_defined_locally(&block.name.name) {
-            let (_, first_span) = scope.lookup_with_span(&block.name.name).unwrap();
-            self.errors.push(SemaError::duplicate_definition(
-                &block.name.name,
-                Some(block.span),
-                first_span,
-            ));
-        }
-
-        // Register in parent scope
-        scope.define_module(&block.name.name, module_id, Some(block.span));
-
-        // Create a child scope for the block body
-        let mut block_scope = scope.child_with_module(module_id);
-
-        // Handle inheritance (from clause)
-        if let Some(super_ref) = &block.super_type {
-            self.resolve_inheritance(module_id, super_ref, scope);
-        }
-
-        // Resolve body statements
-        for stmt in &block.body {
-            self.resolve_block_statement(stmt, module_id, &mut block_scope);
-        }
-    }
-
     /// Resolve inheritance (from clause).
     fn resolve_inheritance(&mut self, module_id: ModuleId, super_ref: &TypeRef, scope: &Scope) {
         let super_name = super_ref.parts.last()
@@ -177,9 +229,8 @@ impl<'a> NameResolver<'a> {
                 self.resolve_assignment_target(&assign.target, &assign.value, module_id, scope);
             }
             Statement::BlockDef(nested) => {
-                // Nested module - resolve recursively
-                self.resolve_block_def(nested, scope);
-                // Also register as nested module
+                // Nested module - was already registered in Pass 1, now resolve its body
+                // Also register as nested module in the parent
                 if let Some(binding) = scope.lookup(&nested.name.name) {
                     if let Some(nested_id) = binding.as_module() {
                         if let Some(module) = self.design.get_module_mut(module_id) {
@@ -187,6 +238,8 @@ impl<'a> NameResolver<'a> {
                         }
                     }
                 }
+                // Resolve the nested block's body
+                self.resolve_block_body(nested, scope);
             }
             Statement::Trait(trait_stmt) => {
                 self.resolve_trait(trait_stmt, module_id, scope);
