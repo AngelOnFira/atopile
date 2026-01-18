@@ -1,0 +1,6 @@
+# Regulator module - base class for voltage regulators
+import ElectricPower
+
+module Regulator:
+    power_in = new ElectricPower
+    power_out = new ElectricPower

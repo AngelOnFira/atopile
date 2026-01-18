@@ -1,0 +1,4 @@
+# has_part_removed trait
+# Marks a component as removed from the design
+interface has_part_removed:
+    pass

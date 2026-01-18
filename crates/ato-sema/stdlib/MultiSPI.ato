@@ -1,0 +1,5 @@
+# MultiSPI interface - multiple SPI buses
+import SPI
+
+interface MultiSPI:
+    spi = new SPI[4]

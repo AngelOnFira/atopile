@@ -8,6 +8,12 @@ interface ElectricPower:
     hv = new Electrical
     lv = new Electrical
 
+    # Aliases for compatibility
+    vcc = new Electrical
+    gnd = new Electrical
+    hv ~ vcc
+    lv ~ gnd
+
     # Electrical parameters
     voltage: V
     max_current: A

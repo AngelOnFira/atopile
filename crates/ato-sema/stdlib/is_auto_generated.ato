@@ -1,0 +1,4 @@
+# is_auto_generated trait
+# Marks a part as auto-generated
+interface is_auto_generated:
+    pass

@@ -1,0 +1,4 @@
+# has_designator_prefix trait
+# Sets the designator prefix for a component (e.g., R for resistors, C for capacitors)
+interface has_designator_prefix:
+    pass

@@ -1,0 +1,4 @@
+# has_part_picked trait
+# Marks a module as having a specific part picked
+interface has_part_picked:
+    pass

@@ -1,0 +1,6 @@
+# PDM interface - Pulse Density Modulation (used by digital microphones)
+import ElectricLogic
+
+interface PDM:
+    clk = new ElectricLogic
+    data = new ElectricLogic

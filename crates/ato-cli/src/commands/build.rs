@@ -19,20 +19,15 @@ use ato_solver::SolverError;
 
 /// Find the stdlib path by looking for crates/ato-sema/stdlib relative to the project.
 fn find_stdlib_path(file_path: &Path) -> Option<PathBuf> {
-    // Try to find the Ato stdlib by walking up from the file path
-    let mut current = file_path.parent()?;
+    // Canonicalize the file path first to handle relative paths
+    let canonical = file_path.canonicalize().ok()?;
+    let mut current = canonical.parent()?;
 
     for _ in 0..10 {  // Don't go up more than 10 levels
         // Check for crates/ato-sema/stdlib (Ato stdlib stubs)
         let stdlib = current.join("crates/ato-sema/stdlib");
         if stdlib.exists() {
             return Some(stdlib);
-        }
-
-        // Also check relative paths
-        let stdlib = current.join("../crates/ato-sema/stdlib");
-        if stdlib.exists() {
-            return Some(stdlib.canonicalize().ok()?);
         }
 
         current = current.parent()?;

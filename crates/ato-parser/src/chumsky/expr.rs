@@ -163,7 +163,7 @@ fn split_number_unit(text: &str) -> (&str, Option<&str>) {
 }
 
 /// Parse a quantity (number with optional unit).
-/// The lexer tokenizes "10kohm" as a single Number token, so we split it here.
+/// Handles both embedded units ("10kohm") and space-separated units ("300 A", "32 kHz").
 pub fn quantity() -> impl Parser<Token, Quantity, Error = Simple<Token>> + Clone {
     // Optional sign
     let sign = choice((tok(TokenKind::Minus).to("-"), tok(TokenKind::Plus).to("")))
@@ -171,8 +171,18 @@ pub fn quantity() -> impl Parser<Token, Quantity, Error = Simple<Token>> + Clone
         .map(|s| s.unwrap_or(""));
 
     sign.then(number_literal())
-        .map_with_span(|(sign, num), span: Range<usize>| {
-            let (num_part, unit_part) = split_number_unit(&num.value);
+        .then(
+            // Try to parse a separate unit token (Name) after the number
+            select! {
+                Token { kind: TokenKind::Name, text, span } => Identifier {
+                    name: text.to_string(),
+                    span: to_span(span.start..span.end),
+                }
+            }
+            .or_not()
+        )
+        .map_with_span(|((sign, num), separate_unit), span: Range<usize>| {
+            let (num_part, embedded_unit) = split_number_unit(&num.value);
 
             let number_value = if sign == "-" {
                 format!("-{}", num_part)
@@ -180,10 +190,14 @@ pub fn quantity() -> impl Parser<Token, Quantity, Error = Simple<Token>> + Clone
                 num_part.to_string()
             };
 
-            let unit = unit_part.map(|u| Identifier {
-                name: u.to_string(),
-                span: num.span, // Approximate span
-            });
+            // Prefer embedded unit (10kohm) over separate unit (10 kohm)
+            // But use separate unit if no embedded unit exists
+            let unit = embedded_unit
+                .map(|u| Identifier {
+                    name: u.to_string(),
+                    span: num.span, // Approximate span
+                })
+                .or(separate_unit);
 
             Quantity {
                 number: NumberLiteral {

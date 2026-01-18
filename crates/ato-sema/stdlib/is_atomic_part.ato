@@ -1,0 +1,4 @@
+# is_atomic_part trait
+# Marks a component as an atomic (non-decomposable) part
+interface is_atomic_part:
+    pass

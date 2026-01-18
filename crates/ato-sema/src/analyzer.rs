@@ -358,18 +358,19 @@ impl Analyzer {
             }
         }
 
-        // Find the requested module and recursively process its inheritance chain
-        if blocks_by_name.contains_key(import_name) {
-            // Process inheritance chain - need to add base classes first
+        // Process ALL modules in the file, not just the requested one
+        // This ensures sibling modules are available as types for each other
+        let mut visited = std::collections::HashSet::new();
+        for (name, _) in &exports {
             self.process_module_with_inheritance(
                 &ast,
-                import_name,
+                name,
                 &blocks_by_name,
                 &import_scope,
                 resolver,
                 design,
                 scope,
-                &mut std::collections::HashSet::new(),
+                &mut visited,
             );
         }
 
@@ -457,8 +458,44 @@ impl Analyzer {
         let module_id = design.create_module(&block.name.name, kind);
         scope.define_module(&block.name.name, module_id, Some(block.span));
 
-        // Analyze the module's body
-        self.analyze_imported_module_with_scope(ast, &block.name.name, module_id, design, import_scope);
+        // Copy inherited fields from base class
+        if let Some(super_ref) = &block.super_type {
+            let super_name = super_ref.parts.last()
+                .map(|p| p.name.clone())
+                .unwrap_or_default();
+
+            if let Some(super_id) = design.find_module(&super_name) {
+                // Get inherited fields from the base class and copy them to this module
+                let inherited_fields: Vec<_> = design
+                    .get_module(super_id)
+                    .map(|m| m.fields.clone())
+                    .unwrap_or_default();
+
+                // Collect field info to avoid borrowing issues
+                let fields_to_copy: Vec<_> = inherited_fields
+                    .iter()
+                    .filter_map(|&field_id| {
+                        design.get_field(field_id).map(|f| (f.name.clone(), f.kind.clone()))
+                    })
+                    .collect();
+
+                for (name, kind) in fields_to_copy {
+                    design.add_field(module_id, &name, kind);
+                }
+            }
+        }
+
+        // Create an extended scope that includes sibling modules from the same file
+        // This allows modules to reference other modules defined in the same file
+        let mut extended_scope = import_scope.child();
+        for (sibling_name, sibling_block) in blocks_by_name {
+            if let Some(sibling_id) = design.find_module(sibling_name) {
+                extended_scope.define_module(sibling_name, sibling_id, Some(sibling_block.span));
+            }
+        }
+
+        // Analyze the module's body with the extended scope
+        self.analyze_imported_module_with_scope(ast, &block.name.name, module_id, design, &extended_scope);
     }
 
     /// Analyze an imported module to populate its fields (legacy, no scope).
@@ -544,11 +581,47 @@ impl Analyzer {
                                     }
                                 }
                             }
+                            Statement::Connection(conn) => {
+                                // Handle inline signal/pin definitions in connections
+                                // e.g., `signal EN ~ pin 12` creates both EN and pin 12
+                                Self::add_connectable_field(&conn.left, module_id, design);
+                                Self::add_connectable_field(&conn.right, module_id, design);
+                            }
+                            Statement::DirectedConnection(conn) => {
+                                // Handle inline definitions in directed connections
+                                for element in &conn.elements {
+                                    Self::add_connectable_field(element, module_id, design);
+                                }
+                            }
                             _ => {}
                         }
                     }
                     break;
                 }
+            }
+        }
+    }
+
+    /// Add a field from a connectable (handles inline signal/pin definitions in connections).
+    fn add_connectable_field(
+        connectable: &ato_parser::Connectable,
+        module_id: ato_ir::ModuleId,
+        design: &mut Design,
+    ) {
+        match connectable {
+            ato_parser::Connectable::SignalDef(signal) => {
+                design.add_field(module_id, &signal.name.name, ato_ir::FieldKind::signal());
+            }
+            ato_parser::Connectable::PinDef(pin) => {
+                let name = match &pin.name {
+                    ato_parser::PinName::Identifier(id) => id.name.clone(),
+                    ato_parser::PinName::Number(n) => n.value.clone(),
+                    ato_parser::PinName::String(s) => s.value.clone(),
+                };
+                design.add_field(module_id, &name, ato_ir::FieldKind::pin(&name));
+            }
+            ato_parser::Connectable::FieldRef(_) => {
+                // Field references don't create new fields
             }
         }
     }

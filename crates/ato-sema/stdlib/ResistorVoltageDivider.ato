@@ -1,0 +1,10 @@
+# ResistorVoltageDivider module
+# A voltage divider made from two resistors
+import Resistor
+import Electrical
+
+module ResistorVoltageDivider:
+    top = new Resistor
+    bottom = new Resistor
+    power = new Electrical[2]
+    output = new Electrical

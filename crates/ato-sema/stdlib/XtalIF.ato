@@ -1,0 +1,6 @@
+# XtalIF interface - Crystal oscillator interface
+import Electrical
+
+interface XtalIF:
+    xin = new Electrical
+    xout = new Electrical

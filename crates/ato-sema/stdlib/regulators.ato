@@ -1,0 +1,23 @@
+# Regulator types
+import Regulator, ResistorVoltageDivider, ElectricPower
+
+module AdjustableRegulator from Regulator:
+    input_voltage: V
+    output_voltage: V
+    reference_voltage: V
+    feedback_divider = new ResistorVoltageDivider
+
+module Buck from AdjustableRegulator:
+    pass
+
+module Boost from AdjustableRegulator:
+    pass
+
+module FixedLDO from Regulator:
+    pass
+
+module AdjustableLDO from AdjustableRegulator:
+    pass
+
+module Flyback from AdjustableRegulator:
+    pass

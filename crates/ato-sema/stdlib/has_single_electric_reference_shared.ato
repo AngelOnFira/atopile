@@ -1,0 +1,4 @@
+# has_single_electric_reference_shared trait
+# Marks a module as having a single shared electric reference
+interface has_single_electric_reference_shared:
+    pass

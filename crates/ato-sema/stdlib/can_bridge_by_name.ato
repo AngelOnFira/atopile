@@ -1,0 +1,4 @@
+# can_bridge_by_name trait
+# Marks a module as capable of bridging connections by name
+interface can_bridge_by_name:
+    pass
