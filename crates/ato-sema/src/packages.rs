@@ -9,9 +9,234 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use crate::error::SemaError;
+
+// ============================================================================
+// Registry API Types
+// ============================================================================
+
+/// Base URL for the atopile package registry
+const REGISTRY_URL: &str = "https://packages.atopileapi.com";
+
+/// Package release info from the registry API
+#[derive(Debug, Clone, Deserialize)]
+pub struct PackageReleaseInfo {
+    pub identifier: String,
+    pub version: String,
+    pub repository: String,
+    pub summary: String,
+    pub filename: String,
+    pub download_url: String,
+    pub size: u64,
+    #[serde(default)]
+    pub dependencies: Option<PackageDependencies>,
+}
+
+/// Package dependencies from the registry
+#[derive(Debug, Clone, Deserialize)]
+pub struct PackageDependencies {
+    #[serde(default)]
+    pub requires: Vec<RegistryDependency>,
+}
+
+/// A registry dependency reference
+#[derive(Debug, Clone, Deserialize)]
+pub struct RegistryDependency {
+    pub identifier: String,
+    #[serde(default)]
+    pub release: Option<String>,
+}
+
+/// Package release response from the API
+#[derive(Debug, Clone, Deserialize)]
+pub struct PackageReleaseResponse {
+    pub info: PackageReleaseInfo,
+    #[serde(default)]
+    pub readme: Option<String>,
+}
+
+/// Package info response (for getting latest version)
+#[derive(Debug, Clone, Deserialize)]
+pub struct PackageInfoResponse {
+    pub info: PackageInfo,
+}
+
+/// Basic package info
+#[derive(Debug, Clone, Deserialize)]
+pub struct PackageInfo {
+    pub identifier: String,
+    pub version: String,
+}
+
+/// Registry API client
+pub struct RegistryClient {
+    base_url: String,
+    client: reqwest::blocking::Client,
+}
+
+impl RegistryClient {
+    /// Create a new registry client
+    pub fn new() -> Self {
+        Self {
+            base_url: REGISTRY_URL.to_string(),
+            client: reqwest::blocking::Client::builder()
+                .user_agent("atopile-rust/0.1.0")
+                .build()
+                .expect("Failed to create HTTP client"),
+        }
+    }
+
+    /// Get package info (latest version if version is None)
+    pub fn get_package(&self, identifier: &str, version: Option<&str>) -> Result<PackageReleaseInfo, SemaError> {
+        // First get the package info to find the version
+        let version = if let Some(v) = version {
+            v.to_string()
+        } else {
+            // Get latest version from package endpoint
+            let url = format!("{}/v1/package/{}", self.base_url, identifier);
+            let response = self.client.get(&url).send().map_err(|e| SemaError::IoError {
+                message: format!("failed to fetch package info: {}", e),
+            })?;
+
+            if response.status() == reqwest::StatusCode::NOT_FOUND {
+                return Err(SemaError::IoError {
+                    message: format!("package '{}' not found in registry", identifier),
+                });
+            }
+
+            response.error_for_status_ref().map_err(|e| SemaError::IoError {
+                message: format!("registry API error: {}", e),
+            })?;
+
+            let info: PackageInfoResponse = response.json().map_err(|e| SemaError::IoError {
+                message: format!("failed to parse package info: {}", e),
+            })?;
+
+            info.info.version
+        };
+
+        // Get the specific release
+        let url = format!("{}/v1/package/{}/releases/{}", self.base_url, identifier, version);
+        let response = self.client.get(&url).send().map_err(|e| SemaError::IoError {
+            message: format!("failed to fetch release info: {}", e),
+        })?;
+
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(SemaError::IoError {
+                message: format!("release '{}@{}' not found in registry", identifier, version),
+            });
+        }
+
+        response.error_for_status_ref().map_err(|e| SemaError::IoError {
+            message: format!("registry API error: {}", e),
+        })?;
+
+        let release: PackageReleaseResponse = response.json().map_err(|e| SemaError::IoError {
+            message: format!("failed to parse release info: {}", e),
+        })?;
+
+        Ok(release.info)
+    }
+
+    /// Download a package to the specified path
+    pub fn download_package(&self, info: &PackageReleaseInfo, output_path: &Path) -> Result<(), SemaError> {
+        let response = self.client.get(&info.download_url).send().map_err(|e| SemaError::IoError {
+            message: format!("failed to download package: {}", e),
+        })?;
+
+        response.error_for_status_ref().map_err(|e| SemaError::IoError {
+            message: format!("failed to download package: {}", e),
+        })?;
+
+        let bytes = response.bytes().map_err(|e| SemaError::IoError {
+            message: format!("failed to read package data: {}", e),
+        })?;
+
+        // Create parent directories
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent).map_err(|e| SemaError::IoError {
+                message: format!("failed to create directory: {}", e),
+            })?;
+        }
+
+        // Write the zip file
+        let mut file = fs::File::create(output_path).map_err(|e| SemaError::IoError {
+            message: format!("failed to create file: {}", e),
+        })?;
+
+        file.write_all(&bytes).map_err(|e| SemaError::IoError {
+            message: format!("failed to write package: {}", e),
+        })?;
+
+        Ok(())
+    }
+
+    /// Extract a zip file to a directory
+    pub fn extract_zip(&self, zip_path: &Path, output_dir: &Path) -> Result<(), SemaError> {
+        let file = fs::File::open(zip_path).map_err(|e| SemaError::IoError {
+            message: format!("failed to open zip file: {}", e),
+        })?;
+
+        let mut archive = zip::ZipArchive::new(file).map_err(|e| SemaError::IoError {
+            message: format!("failed to read zip archive: {}", e),
+        })?;
+
+        for i in 0..archive.len() {
+            let mut file = archive.by_index(i).map_err(|e| SemaError::IoError {
+                message: format!("failed to read zip entry: {}", e),
+            })?;
+
+            let outpath = match file.enclosed_name() {
+                Some(path) => output_dir.join(path),
+                None => continue,
+            };
+
+            if file.name().ends_with('/') {
+                fs::create_dir_all(&outpath).map_err(|e| SemaError::IoError {
+                    message: format!("failed to create directory: {}", e),
+                })?;
+            } else {
+                if let Some(parent) = outpath.parent() {
+                    if !parent.exists() {
+                        fs::create_dir_all(parent).map_err(|e| SemaError::IoError {
+                            message: format!("failed to create directory: {}", e),
+                        })?;
+                    }
+                }
+                let mut outfile = fs::File::create(&outpath).map_err(|e| SemaError::IoError {
+                    message: format!("failed to create file: {}", e),
+                })?;
+                let mut buffer = Vec::new();
+                file.read_to_end(&mut buffer).map_err(|e| SemaError::IoError {
+                    message: format!("failed to read zip entry: {}", e),
+                })?;
+                outfile.write_all(&buffer).map_err(|e| SemaError::IoError {
+                    message: format!("failed to write file: {}", e),
+                })?;
+            }
+
+            // Set permissions on Unix
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Some(mode) = file.unix_mode() {
+                    fs::set_permissions(&outpath, fs::Permissions::from_mode(mode)).ok();
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl Default for RegistryClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 // ============================================================================
 // Configuration Types
@@ -506,9 +731,7 @@ impl PackageManager {
         identifier: &str,
         release: Option<&str>,
     ) -> Result<PathBuf, SemaError> {
-        let version = release.unwrap_or("latest");
-
-        // Check if already in lock file
+        // Check if already in lock file and cached
         if let Some(locked) = self.lock_file.find(identifier) {
             let cached_path = self.cache.package_path(identifier, &locked.resolved);
             if cached_path.exists() {
@@ -519,10 +742,55 @@ impl PackageManager {
             }
         }
 
-        // Download from registry (placeholder - would use actual API)
-        // For now, we'll try to clone from GitHub as a fallback
-        let github_url = format!("https://github.com/{}.git", identifier);
-        self.install_git_package(identifier, &github_url, None, None)
+        // Fetch package info from registry
+        let client = RegistryClient::new();
+        let info = client.get_package(identifier, release)?;
+        let version = &info.version;
+
+        // Check if already cached
+        let cache_path = self.cache.package_path(identifier, version);
+        if !cache_path.exists() {
+            // Download to a temp file first
+            let zip_path = cache_path.with_extension("zip");
+            println!("  Downloading {}@{}...", identifier, version);
+            client.download_package(&info, &zip_path)?;
+
+            // Extract the zip
+            println!("  Extracting...");
+            client.extract_zip(&zip_path, &cache_path)?;
+
+            // Clean up zip file
+            fs::remove_file(&zip_path).ok();
+        }
+
+        // Link to modules directory
+        let target = self.modules_dir.join(identifier);
+        self.link_package(&cache_path, &target)?;
+
+        // Update lock file
+        let dep_identifiers: Vec<String> = info.dependencies
+            .as_ref()
+            .map(|d| d.requires.iter().map(|r| r.identifier.clone()).collect())
+            .unwrap_or_default();
+
+        self.lock_file.upsert(LockedPackage {
+            identifier: identifier.to_string(),
+            source: "registry".to_string(),
+            resolved: version.clone(),
+            checksum: None,
+            dependencies: dep_identifiers,
+        });
+
+        // Install transitive dependencies
+        if let Some(deps) = &info.dependencies {
+            for dep in &deps.requires {
+                if !self.modules_dir.join(&dep.identifier).exists() {
+                    self.install_registry_package(&dep.identifier, dep.release.as_deref())?;
+                }
+            }
+        }
+
+        Ok(target)
     }
 
     /// Install a package from a git repository.
