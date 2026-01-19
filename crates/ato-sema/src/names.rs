@@ -464,10 +464,55 @@ impl<'a> NameResolver<'a> {
             trait_ref = trait_ref.with_constructor(&constructor.name);
         }
 
+        // Process template arguments
+        if let Some(template) = &trait_stmt.template {
+            for arg in &template.args {
+                let arg_name = arg.name.name.clone();
+                let arg_value = self.convert_literal_to_template_arg(&arg.value);
+                trait_ref = trait_ref.with_arg(arg_name, arg_value);
+            }
+        }
+
         trait_ref.span = Some(trait_stmt.span);
 
         if let Some(module) = self.design.get_module_mut(module_id) {
             module.add_trait(trait_ref);
+        }
+    }
+
+    /// Convert a parser Literal to an IR TemplateArgValue.
+    fn convert_literal_to_template_arg(&self, literal: &ato_parser::Literal) -> ato_ir::TemplateArgValue {
+        match literal {
+            ato_parser::Literal::String(s) => {
+                // Strip surrounding quotes from the string value
+                let value = s.value.trim_matches('"').to_string();
+                ato_ir::TemplateArgValue::String(value)
+            }
+            ato_parser::Literal::Bool(b) => {
+                ato_ir::TemplateArgValue::Bool(b.value)
+            }
+            ato_parser::Literal::Number(n) => {
+                // Try to parse as integer first, then as float
+                if let Ok(i) = n.value.parse::<i64>() {
+                    ato_ir::TemplateArgValue::Int(i)
+                } else if let Ok(f) = n.value.parse::<f64>() {
+                    ato_ir::TemplateArgValue::Float(f)
+                } else {
+                    // Fall back to string if parsing fails
+                    ato_ir::TemplateArgValue::String(n.value.clone())
+                }
+            }
+            ato_parser::Literal::Physical(p) => {
+                // For physical literals, convert to string representation
+                // This is mainly for completeness; traits typically use simple values
+                match p {
+                    ato_parser::PhysicalLiteral::Quantity(q) => {
+                        let unit = q.unit.as_ref().map(|u| u.name.as_str()).unwrap_or("");
+                        ato_ir::TemplateArgValue::String(format!("{}{}", q.number.value, unit))
+                    }
+                    _ => ato_ir::TemplateArgValue::String("physical".to_string())
+                }
+            }
         }
     }
 

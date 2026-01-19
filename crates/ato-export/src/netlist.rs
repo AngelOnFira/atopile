@@ -216,28 +216,43 @@ impl<'a> NetlistBuilder<'a> {
     }
 
     /// Get the reference designator prefix for a module type.
-    fn get_designator_prefix(&self, module_id: ModuleId) -> &'static str {
-        // Look at the module name to determine prefix
+    ///
+    /// First checks for `has_designator_prefix::prefix<value="X">` trait,
+    /// then falls back to name-based heuristics.
+    fn get_designator_prefix(&self, module_id: ModuleId) -> String {
         if let Some(module) = self.design.get_module(module_id) {
+            // First, check for has_designator_prefix trait
+            for trait_ref in &module.traits {
+                if trait_ref.name.name() == "has_designator_prefix" {
+                    // Check for constructor "prefix" and get the "value" argument
+                    if trait_ref.constructor.as_deref() == Some("prefix") {
+                        if let Some(value) = trait_ref.get_string_arg("value") {
+                            return value.to_string();
+                        }
+                    }
+                }
+            }
+
+            // Fall back to name-based heuristics
             let name = module.name.to_lowercase();
             if name.contains("resistor") {
-                return "R";
+                return "R".to_string();
             } else if name.contains("capacitor") {
-                return "C";
+                return "C".to_string();
             } else if name.contains("inductor") {
-                return "L";
+                return "L".to_string();
             } else if name.contains("diode") || name.contains("led") {
-                return "D";
+                return "D".to_string();
             } else if name.contains("transistor") || name.contains("mosfet") {
-                return "Q";
+                return "Q".to_string();
             } else if name.contains("connector") {
-                return "J";
+                return "J".to_string();
             } else if name.contains("crystal") {
-                return "Y";
+                return "Y".to_string();
             }
         }
         // Default prefix for ICs and other components
-        "U"
+        "U".to_string()
     }
 
     /// Collect all components from the design.
@@ -270,7 +285,7 @@ impl<'a> NetlistBuilder<'a> {
                             if has_pins {
                                 // Create a component for this instance
                                 let prefix = self.get_designator_prefix(*type_module_id);
-                                let reference = self.generate_reference(prefix);
+                                let reference = self.generate_reference(&prefix);
 
                                 // Get value from the target module's parameters
                                 let value = self.get_module_value(*type_module_id);
@@ -313,7 +328,7 @@ impl<'a> NetlistBuilder<'a> {
 
             if has_pins {
                 let prefix = self.get_designator_prefix(module.id);
-                let reference = self.generate_reference(prefix);
+                let reference = self.generate_reference(&prefix);
 
                 let value = self.get_module_value(module.id);
 
@@ -414,7 +429,7 @@ impl<'a> NetlistBuilder<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ato_ir::{ModuleKind, FieldKind, FieldPath, FieldPathPart, ConnectionEndpoint};
+    use ato_ir::{ModuleKind, FieldKind, FieldPath, FieldPathPart, ConnectionEndpoint, TraitRef, QualifiedName, TemplateArgValue};
 
     #[test]
     fn test_netlist_component() {
@@ -496,6 +511,78 @@ mod tests {
         assert_eq!(builder.generate_reference("R"), "R2");
         assert_eq!(builder.generate_reference("C"), "C1");
         assert_eq!(builder.generate_reference("R"), "R3");
+    }
+
+    #[test]
+    fn test_has_designator_prefix_trait() {
+        // Test that has_designator_prefix::prefix<value="X"> trait overrides default prefix
+        let mut design = Design::new();
+
+        // Create a CustomComponent with has_designator_prefix trait
+        let component_id = design.create_module("CustomComponent", ModuleKind::Component);
+        design.add_field(component_id, "p1", FieldKind::pin("1"));
+        design.add_field(component_id, "p2", FieldKind::pin("2"));
+
+        // Add the has_designator_prefix::prefix<value="X"> trait
+        if let Some(module) = design.get_module_mut(component_id) {
+            let trait_ref = TraitRef::new(QualifiedName::simple("has_designator_prefix"))
+                .with_constructor("prefix")
+                .with_arg("value", TemplateArgValue::String("X".to_string()));
+            module.add_trait(trait_ref);
+        }
+
+        // Create App with an instance of CustomComponent
+        let app_id = design.create_module("App", ModuleKind::Module);
+        let instance_kind = FieldKind::Instance {
+            type_ref: QualifiedName::simple("CustomComponent"),
+            count: None,
+            resolved_type: Some(component_id),
+        };
+        design.add_field(app_id, "custom1", instance_kind);
+
+        // Build netlist
+        let builder = NetlistBuilder::new(&design);
+        let netlist = builder.build().unwrap();
+
+        // Should have 1 component with "X" prefix
+        assert_eq!(netlist.component_count(), 1);
+        assert!(
+            netlist.get_component("X1").is_some(),
+            "Component should use 'X' prefix from trait, got components: {:?}",
+            netlist.components.iter().map(|c| &c.reference).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_designator_prefix_fallback_to_name_heuristics() {
+        // Test that modules without has_designator_prefix trait use name-based heuristics
+        let mut design = Design::new();
+
+        // Create a Resistor module (no trait, should use "R" prefix based on name)
+        let resistor_id = design.create_module("MyResistor", ModuleKind::Module);
+        design.add_field(resistor_id, "p1", FieldKind::pin("1"));
+        design.add_field(resistor_id, "p2", FieldKind::pin("2"));
+
+        // Create App with an instance
+        let app_id = design.create_module("App", ModuleKind::Module);
+        let instance_kind = FieldKind::Instance {
+            type_ref: QualifiedName::simple("MyResistor"),
+            count: None,
+            resolved_type: Some(resistor_id),
+        };
+        design.add_field(app_id, "r1", instance_kind);
+
+        // Build netlist
+        let builder = NetlistBuilder::new(&design);
+        let netlist = builder.build().unwrap();
+
+        // Should have 1 component with "R" prefix (from name heuristics)
+        assert_eq!(netlist.component_count(), 1);
+        assert!(
+            netlist.get_component("R1").is_some(),
+            "Resistor should use 'R' prefix from name heuristics, got: {:?}",
+            netlist.components.iter().map(|c| &c.reference).collect::<Vec<_>>()
+        );
     }
 
     // =========================================================================

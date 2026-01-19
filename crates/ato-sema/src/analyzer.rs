@@ -839,6 +839,33 @@ module Resistor:
     }
 
     #[test]
+    fn test_analyze_trait_with_template_args() {
+        // Test that trait template arguments are captured correctly
+        let source = r#"
+module LED:
+    trait has_designator_prefix::prefix<value="D">
+    trait can_bridge_by_name<input_name="anode", output_name="cathode">
+"#;
+        let mut analyzer = Analyzer::new();
+        let design = analyzer.analyze_source(source).unwrap();
+
+        let module = &design.modules()[0];
+        assert_eq!(module.traits.len(), 2, "Should have 2 traits");
+
+        // Check has_designator_prefix trait
+        let designator_trait = &module.traits[0];
+        assert_eq!(designator_trait.name.name(), "has_designator_prefix");
+        assert_eq!(designator_trait.constructor, Some("prefix".to_string()));
+        assert_eq!(designator_trait.get_string_arg("value"), Some("D"));
+
+        // Check can_bridge_by_name trait
+        let bridge_trait = &module.traits[1];
+        assert_eq!(bridge_trait.name.name(), "can_bridge_by_name");
+        assert_eq!(bridge_trait.get_string_arg("input_name"), Some("anode"));
+        assert_eq!(bridge_trait.get_string_arg("output_name"), Some("cathode"));
+    }
+
+    #[test]
     fn test_analyze_instance_in_assertion() {
         // Bug: instance created with `new` should be accessible in assertions
         // First test without assertion to verify field is in design

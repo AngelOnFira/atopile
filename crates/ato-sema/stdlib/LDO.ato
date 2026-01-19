@@ -23,5 +23,5 @@ module LDO:
     package: dimensionless
 
     # Traits
-    trait can_bridge
+    trait can_bridge_by_name<input_name="power_in", output_name="power_out">
     trait has_designator_prefix::prefix<value="U">

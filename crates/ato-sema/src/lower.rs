@@ -6,7 +6,7 @@
 use crate::error::{ErrorCollector, SemaError};
 use crate::scope::{Binding, Scope};
 use ato_ir::{
-    CompareOpKind as IrCompareOpKind, ConnectionEndpoint, ConnectionKind, ConstraintExpr,
+    CompareOpKind as IrCompareOpKind, ConnectionEndpoint, ConstraintExpr,
     Design, FieldId, FieldKind, FieldPath, FieldPathPart, ModuleId,
     QuantityValue, ToleranceValue, ValueExpr, ValueLiteral,
 };
@@ -127,22 +127,174 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Lower a directed connection (a ~> b ~> c).
+    ///
+    /// For bridge elements (those with can_bridge or can_bridge_by_name trait),
+    /// expands to use the appropriate input/output fields.
     fn lower_directed_connection(&mut self, conn: &DirectedConnection, module_id: ModuleId, scope: &Scope) {
-        let endpoints: Vec<ConnectionEndpoint> = conn.elements
+        // Lower all connectables to endpoints
+        let elements: Vec<(ConnectionEndpoint, &Connectable)> = conn.elements
             .iter()
-            .map(|e| self.lower_connectable(e, module_id, scope))
+            .map(|e| (self.lower_connectable(e, module_id, scope), e))
             .collect();
 
-        let kind = match conn.direction {
-            ConnectionDirection::Forward => {
-                ConnectionKind::Directed(ato_ir::ConnectionDirection::Forward)
-            }
-            ConnectionDirection::Backward => {
-                ConnectionKind::Directed(ato_ir::ConnectionDirection::Backward)
-            }
-        };
+        if elements.len() < 2 {
+            return; // Need at least two elements
+        }
 
-        self.design.add_directed_connection(module_id, endpoints, kind);
+        // Determine if this is forward or backward connection
+        let is_forward = matches!(conn.direction, ConnectionDirection::Forward);
+
+        // Check if any middle elements are bridges
+        let has_bridges = elements.iter().enumerate().any(|(i, (ep, _))| {
+            i > 0 && i < elements.len() - 1 && self.is_bridge_element(ep)
+        });
+
+        // If no bridges, use the original directed connection approach
+        if !has_bridges {
+            let endpoints: Vec<ConnectionEndpoint> = elements.into_iter().map(|(ep, _)| ep).collect();
+            let kind = match conn.direction {
+                ConnectionDirection::Forward => {
+                    ato_ir::ConnectionKind::Directed(ato_ir::ConnectionDirection::Forward)
+                }
+                ConnectionDirection::Backward => {
+                    ato_ir::ConnectionKind::Directed(ato_ir::ConnectionDirection::Backward)
+                }
+            };
+            self.design.add_directed_connection(module_id, endpoints, kind);
+            return;
+        }
+
+        // Process connections between consecutive elements, expanding bridges
+        for i in 0..elements.len() - 1 {
+            let (left_endpoint, _left_connectable) = &elements[i];
+            let (right_endpoint, right_connectable) = &elements[i + 1];
+
+            // Check if left is a bridge (not first element) - need to use its output
+            let left_is_bridge = i > 0 && self.is_bridge_element(left_endpoint);
+            // Check if right is a bridge (not last element) - need to use its input
+            let right_is_bridge = (i + 1) < elements.len() - 1 && self.is_bridge_element(right_endpoint);
+
+            // Determine actual endpoints to connect
+            let actual_left = if left_is_bridge {
+                self.get_bridge_output_endpoint(left_endpoint, is_forward)
+            } else {
+                left_endpoint.clone()
+            };
+
+            let actual_right = if right_is_bridge {
+                self.get_bridge_input_endpoint(right_endpoint, right_connectable, is_forward)
+            } else {
+                right_endpoint.clone()
+            };
+
+            // Add the connection
+            self.design.add_connection(module_id, actual_left, actual_right);
+        }
+    }
+
+    /// Check if an endpoint represents a bridge element (has can_bridge or can_bridge_by_name trait).
+    fn is_bridge_element(&self, endpoint: &ConnectionEndpoint) -> bool {
+        if let Some(field_id) = endpoint.resolved {
+            if let Some(field) = self.design.get_field(field_id) {
+                if let FieldKind::Instance { resolved_type: Some(type_id), .. } = &field.kind {
+                    if let Some(module) = self.design.get_module(*type_id) {
+                        return module.traits.iter().any(|t| {
+                            let name = t.name.name();
+                            name == "can_bridge" || name == "can_bridge_by_name"
+                        });
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Get the bridge field info (input_field, output_field) for a bridge module.
+    fn get_bridge_field_names(&self, endpoint: &ConnectionEndpoint) -> (String, String) {
+        if let Some(field_id) = endpoint.resolved {
+            if let Some(field) = self.design.get_field(field_id) {
+                if let FieldKind::Instance { resolved_type: Some(type_id), .. } = &field.kind {
+                    if let Some(module) = self.design.get_module(*type_id) {
+                        // Look for can_bridge_by_name trait first
+                        for trait_ref in &module.traits {
+                            if trait_ref.name.name() == "can_bridge_by_name" {
+                                let input = trait_ref.get_string_arg("input_name")
+                                    .unwrap_or("input");
+                                let output = trait_ref.get_string_arg("output_name")
+                                    .unwrap_or("output");
+                                return (input.to_string(), output.to_string());
+                            }
+                        }
+                        // Fall back to can_bridge which uses unnamed[0] and unnamed[1]
+                        for trait_ref in &module.traits {
+                            if trait_ref.name.name() == "can_bridge" {
+                                return ("unnamed[0]".to_string(), "unnamed[1]".to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Default fallback
+        ("unnamed[0]".to_string(), "unnamed[1]".to_string())
+    }
+
+    /// Get the input endpoint for a bridge element.
+    fn get_bridge_input_endpoint(&self, endpoint: &ConnectionEndpoint, _connectable: &Connectable, is_forward: bool) -> ConnectionEndpoint {
+        let (input_name, output_name) = self.get_bridge_field_names(endpoint);
+        let field_name = if is_forward { &input_name } else { &output_name };
+
+        // Create a new path that appends the bridge field
+        if let ato_ir::EndpointKind::FieldRef(base_path) = &endpoint.kind {
+            let mut new_path = base_path.clone();
+            // Parse the field name - handle both "unnamed[0]" and simple "input" cases
+            if field_name.contains('[') {
+                // Array access like "unnamed[0]"
+                let parts: Vec<&str> = field_name.split('[').collect();
+                let name = parts[0];
+                let index: u32 = parts.get(1)
+                    .and_then(|s| s.trim_end_matches(']').parse().ok())
+                    .unwrap_or(0);
+                new_path = new_path.append_indexed(name, index);
+            } else {
+                new_path = new_path.append(field_name);
+            }
+            ConnectionEndpoint {
+                kind: ato_ir::EndpointKind::FieldRef(new_path),
+                resolved: None, // Will need to be resolved later
+            }
+        } else {
+            endpoint.clone()
+        }
+    }
+
+    /// Get the output endpoint for a bridge element.
+    fn get_bridge_output_endpoint(&self, endpoint: &ConnectionEndpoint, is_forward: bool) -> ConnectionEndpoint {
+        let (input_name, output_name) = self.get_bridge_field_names(endpoint);
+        let field_name = if is_forward { &output_name } else { &input_name };
+
+        // Create a new path that appends the bridge field
+        if let ato_ir::EndpointKind::FieldRef(base_path) = &endpoint.kind {
+            let mut new_path = base_path.clone();
+            // Parse the field name - handle both "unnamed[0]" and simple "input" cases
+            if field_name.contains('[') {
+                // Array access like "unnamed[1]"
+                let parts: Vec<&str> = field_name.split('[').collect();
+                let name = parts[0];
+                let index: u32 = parts.get(1)
+                    .and_then(|s| s.trim_end_matches(']').parse().ok())
+                    .unwrap_or(1);
+                new_path = new_path.append_indexed(name, index);
+            } else {
+                new_path = new_path.append(field_name);
+            }
+            ConnectionEndpoint {
+                kind: ato_ir::EndpointKind::FieldRef(new_path),
+                resolved: None, // Will need to be resolved later
+            }
+        } else {
+            endpoint.clone()
+        }
     }
 
     /// Lower a connectable element to a connection endpoint.
@@ -622,7 +774,7 @@ module M:
 module M:
     voltage: V = 3.3V
 "#;
-        let (design, errors) = lower(source);
+        let (_design, errors) = lower(source);
         assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
     }
 
@@ -636,5 +788,109 @@ module M:
         let (design, errors) = lower(source);
         assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
         assert_eq!(design.constraint_count(), 1);
+    }
+
+    #[test]
+    fn test_can_bridge_trait_expansion() {
+        // Test that modules with can_bridge trait are expanded to use unnamed[0] and unnamed[1]
+        let source = r#"
+#pragma experiment("BRIDGE_CONNECT")
+#pragma experiment("TRAITS")
+interface Electrical:
+    pass
+
+module Resistor:
+    unnamed = new Electrical[2]
+    trait can_bridge
+
+module App:
+    signal input
+    signal output
+    r = new Resistor
+    input ~> r ~> output
+"#;
+        let (design, errors) = lower(source);
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+
+        // Should have 2 connections: input ~ r.unnamed[0] and r.unnamed[1] ~ output
+        assert_eq!(design.connection_count(), 2, "Expected 2 connections for bridge expansion");
+    }
+
+    #[test]
+    fn test_can_bridge_by_name_trait_expansion() {
+        // Test that modules with can_bridge_by_name trait use custom field names
+        let source = r#"
+#pragma experiment("BRIDGE_CONNECT")
+#pragma experiment("TRAITS")
+interface Electrical:
+    pass
+
+module Button:
+    in_field = new Electrical
+    out_field = new Electrical
+    trait can_bridge_by_name<input_name="in_field", output_name="out_field">
+
+module App:
+    signal a
+    signal b
+    btn = new Button
+    a ~> btn ~> b
+"#;
+        let (design, errors) = lower(source);
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+
+        // Should have 2 connections using custom field names
+        assert_eq!(design.connection_count(), 2, "Expected 2 connections for bridge expansion");
+    }
+
+    #[test]
+    fn test_directed_connection_without_bridge() {
+        // Test that directed connections without bridges remain as directed connections
+        let source = r#"
+#pragma experiment("BRIDGE_CONNECT")
+module M:
+    pin p1
+    pin p2
+    pin p3
+    p1 ~> p2 ~> p3
+"#;
+        let (design, errors) = lower(source);
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+
+        // Should be 1 directed connection with 3 endpoints
+        assert_eq!(design.connection_count(), 1);
+        let conn = &design.connections()[0];
+        assert!(conn.is_directed());
+        assert_eq!(conn.endpoints.len(), 3);
+    }
+
+    #[test]
+    fn test_chained_bridges() {
+        // Test chaining multiple bridges: input ~> r1 ~> r2 ~> output
+        let source = r#"
+#pragma experiment("BRIDGE_CONNECT")
+#pragma experiment("TRAITS")
+interface Electrical:
+    pass
+
+module Resistor:
+    unnamed = new Electrical[2]
+    trait can_bridge
+
+module App:
+    signal input
+    signal output
+    r1 = new Resistor
+    r2 = new Resistor
+    input ~> r1 ~> r2 ~> output
+"#;
+        let (design, errors) = lower(source);
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+
+        // Should have 3 connections:
+        // input ~ r1.unnamed[0]
+        // r1.unnamed[1] ~ r2.unnamed[0]
+        // r2.unnamed[1] ~ output
+        assert_eq!(design.connection_count(), 3, "Expected 3 connections for chained bridges");
     }
 }

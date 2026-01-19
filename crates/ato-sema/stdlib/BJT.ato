@@ -19,5 +19,5 @@ module BJT:
     package: dimensionless
 
     # Traits
-    trait can_bridge
+    trait can_bridge_by_name<input_name="collector", output_name="emitter">
     trait has_designator_prefix::prefix<value="Q">

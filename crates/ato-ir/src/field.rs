@@ -213,6 +213,21 @@ impl FieldPath {
             _ => None,
         })
     }
+
+    /// Append a named field to the path.
+    pub fn append(&self, name: &str) -> Self {
+        let mut parts = self.parts.clone();
+        parts.push(FieldPathPart::Name(name.to_string()));
+        Self { parts }
+    }
+
+    /// Append a named field with an index to the path (e.g., "unnamed[0]").
+    pub fn append_indexed(&self, name: &str, index: u32) -> Self {
+        let mut parts = self.parts.clone();
+        parts.push(FieldPathPart::Name(name.to_string()));
+        parts.push(FieldPathPart::Index(index));
+        Self { parts }
+    }
 }
 
 /// A part of a field path.

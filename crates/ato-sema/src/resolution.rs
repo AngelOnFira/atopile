@@ -785,7 +785,7 @@ dependencies:
 
         let config = ResolutionConfig::new("/project")
             .with_stdlib("/stdlib");
-        let resolver = Resolver::with_loader(config, Box::new(loader));
+        let _resolver = Resolver::with_loader(config, Box::new(loader));
 
         // Note: index_stdlib won't work with mock loader for dir listing
         // but we can test the registry directly

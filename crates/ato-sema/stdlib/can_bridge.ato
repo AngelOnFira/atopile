@@ -1,0 +1,5 @@
+# can_bridge trait
+# Marks a module as capable of bridging directed connections.
+# Uses unnamed[0] as input and unnamed[1] as output.
+interface can_bridge:
+    pass

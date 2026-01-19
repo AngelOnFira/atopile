@@ -177,8 +177,8 @@ pub struct TraitRef {
     /// Optional constructor name.
     pub constructor: Option<String>,
 
-    /// Template arguments.
-    pub template_args: Vec<TemplateArgValue>,
+    /// Template arguments (named).
+    pub template_args: Vec<NamedTemplateArg>,
 
     /// Source location for error reporting.
     pub span: Option<Span>,
@@ -202,10 +202,11 @@ impl TraitRef {
     }
 
     /// Add a template argument.
-    pub fn with_arg(mut self, _name: impl Into<String>, value: TemplateArgValue) -> Self {
-        // Note: In the future, we could store name-value pairs
-        // For now, just push the value
-        self.template_args.push(value);
+    pub fn with_arg(mut self, name: impl Into<String>, value: TemplateArgValue) -> Self {
+        self.template_args.push(NamedTemplateArg {
+            name: name.into(),
+            value,
+        });
         self
     }
 
@@ -214,6 +215,34 @@ impl TraitRef {
         self.span = Some(span);
         self
     }
+
+    /// Get a template argument by name.
+    pub fn get_arg(&self, name: &str) -> Option<&TemplateArgValue> {
+        self.template_args
+            .iter()
+            .find(|arg| arg.name == name)
+            .map(|arg| &arg.value)
+    }
+
+    /// Get a string template argument by name.
+    pub fn get_string_arg(&self, name: &str) -> Option<&str> {
+        self.get_arg(name).and_then(|v| {
+            if let TemplateArgValue::String(s) = v {
+                Some(s.as_str())
+            } else {
+                None
+            }
+        })
+    }
+}
+
+/// A named template argument.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NamedTemplateArg {
+    /// The argument name.
+    pub name: String,
+    /// The argument value.
+    pub value: TemplateArgValue,
 }
 
 /// A template argument value.
@@ -313,6 +342,12 @@ mod tests {
         assert_eq!(trait_ref.name.name(), "has_designator");
         assert_eq!(trait_ref.constructor, Some("prefix".into()));
         assert_eq!(trait_ref.template_args.len(), 1);
+
+        // Test get_arg and get_string_arg
+        assert_eq!(trait_ref.get_arg("value"), Some(&TemplateArgValue::String("R".into())));
+        assert_eq!(trait_ref.get_string_arg("value"), Some("R"));
+        assert_eq!(trait_ref.get_arg("nonexistent"), None);
+        assert_eq!(trait_ref.get_string_arg("nonexistent"), None);
     }
 
     #[test]

@@ -21,5 +21,5 @@ module MOSFET:
     package: dimensionless
 
     # Traits
-    trait can_bridge
+    trait can_bridge_by_name<input_name="drain", output_name="source">
     trait has_designator_prefix::prefix<value="Q">

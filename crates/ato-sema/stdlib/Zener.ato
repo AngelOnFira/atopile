@@ -20,5 +20,5 @@ module Zener:
     package: dimensionless
 
     # Traits
-    trait can_bridge
+    trait can_bridge_by_name<input_name="anode", output_name="cathode">
     trait has_designator_prefix::prefix<value="D">
