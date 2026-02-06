@@ -1,0 +1,4 @@
+# has_single_electric_reference trait
+# Marks a module as having a single electric reference
+interface has_single_electric_reference:
+    pass

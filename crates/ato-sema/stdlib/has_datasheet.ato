@@ -1,0 +1,4 @@
+# has_datasheet trait
+# Marks a component as having a datasheet
+interface has_datasheet:
+    pass
