@@ -10,6 +10,9 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
+
+use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::error::{CliError, CliResult, SemanticErrorInfo, read_file};
 use ato_export::{
@@ -24,6 +27,36 @@ use ato_parts::{
 };
 use ato_sema::{Analyzer, AtoConfig, ConstraintCollector, SemaError};
 use ato_solver::SolverError;
+
+/// Create a spinner progress bar with a consistent style.
+fn make_spinner(msg: &str) -> ProgressBar {
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(
+        ProgressStyle::with_template("{spinner:.cyan} {msg}")
+            .unwrap()
+            .tick_strings(&[
+                "\u{2800}", "\u{2801}", "\u{2809}", "\u{281b}",
+                "\u{283b}", "\u{2839}", "\u{2838}", "\u{2830}",
+                "\u{2834}", "\u{2836}", "\u{2837}", "\u{2827}",
+                "\u{2807}", "\u{2803}", "\u{2802}", "\u{2800}",
+            ]),
+    );
+    pb.set_message(msg.to_string());
+    pb.enable_steady_tick(std::time::Duration::from_millis(80));
+    pb
+}
+
+/// Finish a spinner with a green checkmark message.
+fn finish_spinner(pb: &ProgressBar, msg: &str) {
+    pb.set_style(
+        ProgressStyle::with_template("{msg}").unwrap()
+    );
+    pb.finish_with_message(format!(
+        "{} {}",
+        console::style("\u{2713}").green(),
+        msg
+    ));
+}
 
 /// Resolved build target containing the file path and optional root module name.
 struct BuildTarget {
@@ -199,6 +232,9 @@ pub fn run(target: Option<&str>, output: Option<&Path>, verbose: bool) -> CliRes
     // Read the file
     let source = read_file(path)?;
     let file_name = path.display().to_string();
+    let short_name = path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(&file_name);
 
     if verbose {
         println!("Building {}...", file_name);
@@ -208,9 +244,7 @@ pub fn run(target: Option<&str>, output: Option<&Path>, verbose: bool) -> CliRes
     }
 
     // Phase 1: Semantic analysis
-    if verbose {
-        println!("  Phase 1: Semantic analysis...");
-    }
+    let spinner = make_spinner(&format!("Analyzing {}...", short_name));
 
     // Setup analyzer with stdlib if found
     let mut analyzer = Analyzer::new();
@@ -224,38 +258,32 @@ pub fn run(target: Option<&str>, output: Option<&Path>, verbose: bool) -> CliRes
     let design = match analyzer.analyze_file(&source, path) {
         Ok(design) => design,
         Err(errors) => {
+            spinner.finish_and_clear();
             let sema_errors = convert_sema_errors(&errors);
             return Err(CliError::semantic(&file_name, sema_errors, source));
         }
     };
 
-    if verbose {
-        println!("    {} module(s)", design.module_count());
-        println!("    {} field(s)", design.field_count());
-        println!("    {} connection(s)", design.connection_count());
-        println!("    {} constraint(s)", design.constraint_count());
-    }
+    finish_spinner(&spinner, &format!(
+        "Analyzed: {} modules, {} fields, {} connections",
+        design.module_count(),
+        design.field_count(),
+        design.connection_count(),
+    ));
 
     // Phase 2: Constraint solving
-    if verbose {
-        println!("  Phase 2: Constraint solving...");
-    }
-
+    let constraint_count = design.constraint_count();
     let mut _solved_params: HashMap<String, String> = HashMap::new();
 
-    // Extract constraints from the design and run the solver
-    let constraint_count = design.constraint_count();
     if constraint_count > 0 {
-        if verbose {
-            println!("    Collecting {} constraint(s)...", constraint_count);
-        }
+        let spinner = make_spinner(&format!("Solving {} constraints...", constraint_count));
+        let solve_start = Instant::now();
 
         // Collect constraints from the IR
         let collector = ConstraintCollector::new();
         match collector.collect(&design) {
             Ok((mut solver, dependencies)) => {
                 if verbose {
-                    println!("    Collected {} parameter(s)", solver.predicate_count());
                     let free_count = dependencies.free_parameters().len();
                     let constrained_count = dependencies.constrained_parameters().len();
                     if free_count > 0 || constrained_count > 0 {
@@ -263,27 +291,23 @@ pub fn run(target: Option<&str>, output: Option<&Path>, verbose: bool) -> CliRes
                     }
                 }
 
-                // Run the solver
-                if verbose {
-                    println!("    Running solver...");
-                }
-
                 match solver.solve() {
                     Ok(result) => {
-                        if verbose {
-                            println!("    Solver completed in {} iteration(s) ({:?})", result.iterations, result.elapsed);
-                            if result.all_satisfied {
-                                println!("    All constraints satisfied");
-                            } else {
-                                println!("    {} constraint(s) not fully deduced", result.not_deduced.len());
-                            }
+                        let elapsed = solve_start.elapsed();
+                        finish_spinner(&spinner, &format!(
+                            "Solved {} constraints in {} iterations ({:.0?})",
+                            constraint_count, result.iterations, elapsed
+                        ));
+
+                        if verbose && !result.all_satisfied {
+                            println!("    {} constraint(s) not fully deduced", result.not_deduced.len());
                         }
 
                         // Extract solved parameter values for part picking
                         _solved_params = extract_solved_parameters(&result, verbose);
                     }
                     Err(SolverError::Contradiction(msg)) => {
-                        // Contradiction is a build failure
+                        spinner.finish_and_clear();
                         return Err(CliError::solver(
                             &file_name,
                             format!("Constraint contradiction: {}", msg),
@@ -292,35 +316,31 @@ pub fn run(target: Option<&str>, output: Option<&Path>, verbose: bool) -> CliRes
                         ));
                     }
                     Err(SolverError::Timeout { iterations, elapsed }) => {
-                        if verbose {
-                            println!("    Solver timed out after {} iterations ({:?})", iterations, elapsed);
-                        }
-                        // Timeout is a warning, not a failure
+                        finish_spinner(&spinner, &format!(
+                            "Solver timed out after {} iterations ({:?})",
+                            iterations, elapsed
+                        ));
                     }
                     Err(e) => {
-                        if verbose {
-                            println!("    Solver warning: {}", e);
-                        }
-                        // Other solver errors are warnings
+                        finish_spinner(&spinner, &format!("Solver warning: {}", e));
                     }
                 }
             }
             Err(e) => {
-                if verbose {
-                    println!("    Constraint collection error: {}", e);
-                }
-                // For now, just warn about collection errors
+                finish_spinner(&spinner, &format!("Constraint collection error: {}", e));
             }
         }
-    } else if verbose {
-        println!("    No constraints to solve");
     }
 
     // Phase 2.5: Part picking
-    if verbose {
-        println!("  Phase 2.5: Part picking...");
-    }
+    let pick_spinner = make_spinner("Picking parts...");
     let picked_parts = pick_parts(&design, &_solved_params, verbose);
+    let picked_count = picked_parts.len() / 3; // Each part generates ~3 entries (lcsc, footprint, value)
+    if picked_count > 0 {
+        finish_spinner(&pick_spinner, &format!("Picked {} passive components", picked_count));
+    } else {
+        finish_spinner(&pick_spinner, "No passive components to pick");
+    }
 
     // Merge picked part info into solved params so the netlist builder can use them
     for (key, value) in &picked_parts {
@@ -328,16 +348,13 @@ pub fn run(target: Option<&str>, output: Option<&Path>, verbose: bool) -> CliRes
     }
 
     // Phase 3: Output generation
-    if verbose {
-        println!("  Phase 3: Output generation...");
-    }
+    let gen_spinner = make_spinner("Generating output...");
 
     // Determine output directory
     let output_dir = match output {
         Some(out_path) => out_path.to_path_buf(),
         None => {
             if let Some(ref project_root) = build_target.project_root {
-                // Use project_root/build when building from ato.yaml
                 project_root.join("build")
             } else {
                 path.parent().unwrap_or(Path::new(".")).join("build")
@@ -347,6 +364,7 @@ pub fn run(target: Option<&str>, output: Option<&Path>, verbose: bool) -> CliRes
 
     // Create output directory if it doesn't exist
     if let Err(e) = fs::create_dir_all(&output_dir) {
+        gen_spinner.finish_and_clear();
         return Err(CliError::io(format!(
             "Failed to create output directory '{}': {}",
             output_dir.display(),
@@ -359,13 +377,10 @@ pub fn run(target: Option<&str>, output: Option<&Path>, verbose: bool) -> CliRes
     }
 
     // Determine entry module for the netlist builder.
-    // Priority: design entry_module > build target root_module > name match from file stem
     let entry_module = design.entry_module().or_else(|| {
-        // Try the root module name from the build target
         if let Some(ref root_name) = build_target._root_module {
             return design.find_module(root_name);
         }
-        // Try to find a module whose name matches the file stem (case-insensitive)
         let file_stem = path.file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("")
@@ -378,7 +393,6 @@ pub fn run(target: Option<&str>, output: Option<&Path>, verbose: bool) -> CliRes
                 }
             }
         }
-        // Fall back to the last non-interface module that has instance fields
         design.modules().iter().rev()
             .find(|m| {
                 !m.is_interface() && m.fields.iter().any(|&fid| {
@@ -405,15 +419,9 @@ pub fn run(target: Option<&str>, output: Option<&Path>, verbose: bool) -> CliRes
             if verbose {
                 println!("    Warning: Failed to build netlist: {}", e);
             }
-            // Continue with empty netlist for now
             ato_export::Netlist::new()
         }
     };
-
-    if verbose {
-        println!("    {} component(s) in netlist", netlist.component_count());
-        println!("    {} net(s) in netlist", netlist.net_count());
-    }
 
     // Get project name from file stem
     let project_name = path
@@ -421,24 +429,20 @@ pub fn run(target: Option<&str>, output: Option<&Path>, verbose: bool) -> CliRes
         .and_then(|s| s.to_str())
         .unwrap_or("project");
 
+    let mut generated_files: Vec<String> = Vec::new();
+
     // Generate KiCad netlist
     let netlist_path = output_dir.join(format!("{}.net", project_name));
     let exporter = KicadNetlistExporter::new(&netlist);
     match exporter.export_to_string() {
         Ok(content) => {
             if let Err(e) = fs::write(&netlist_path, &content) {
-                if verbose {
-                    println!("    Warning: Failed to write netlist: {}", e);
-                }
-            } else if verbose {
-                println!("    Generated: {}", netlist_path.display());
+                if verbose { println!("    Warning: Failed to write netlist: {}", e); }
+            } else {
+                generated_files.push(format!("{}.net", project_name));
             }
         }
-        Err(e) => {
-            if verbose {
-                println!("    Warning: Failed to generate netlist: {}", e);
-            }
-        }
+        Err(e) => { if verbose { println!("    Warning: Failed to generate netlist: {}", e); } }
     }
 
     // Generate KiCad schematic
@@ -447,18 +451,12 @@ pub fn run(target: Option<&str>, output: Option<&Path>, verbose: bool) -> CliRes
     match schematic.export_to_string() {
         Ok(content) => {
             if let Err(e) = fs::write(&schematic_path, &content) {
-                if verbose {
-                    println!("    Warning: Failed to write schematic: {}", e);
-                }
-            } else if verbose {
-                println!("    Generated: {}", schematic_path.display());
+                if verbose { println!("    Warning: Failed to write schematic: {}", e); }
+            } else {
+                generated_files.push(format!("{}.kicad_sch", project_name));
             }
         }
-        Err(e) => {
-            if verbose {
-                println!("    Warning: Failed to generate schematic: {}", e);
-            }
-        }
+        Err(e) => { if verbose { println!("    Warning: Failed to generate schematic: {}", e); } }
     }
 
     // Generate KiCad PCB
@@ -467,18 +465,12 @@ pub fn run(target: Option<&str>, output: Option<&Path>, verbose: bool) -> CliRes
     match pcb.export_to_string() {
         Ok(content) => {
             if let Err(e) = fs::write(&pcb_path, &content) {
-                if verbose {
-                    println!("    Warning: Failed to write PCB: {}", e);
-                }
-            } else if verbose {
-                println!("    Generated: {}", pcb_path.display());
+                if verbose { println!("    Warning: Failed to write PCB: {}", e); }
+            } else {
+                generated_files.push(format!("{}.kicad_pcb", project_name));
             }
         }
-        Err(e) => {
-            if verbose {
-                println!("    Warning: Failed to generate PCB: {}", e);
-            }
-        }
+        Err(e) => { if verbose { println!("    Warning: Failed to generate PCB: {}", e); } }
     }
 
     // Generate KiCad project file with library configuration
@@ -487,18 +479,12 @@ pub fn run(target: Option<&str>, output: Option<&Path>, verbose: bool) -> CliRes
     match kicad_project.to_json() {
         Ok(content) => {
             if let Err(e) = fs::write(&project_path, &content) {
-                if verbose {
-                    println!("    Warning: Failed to write project file: {}", e);
-                }
-            } else if verbose {
-                println!("    Generated: {}", project_path.display());
+                if verbose { println!("    Warning: Failed to write project file: {}", e); }
+            } else {
+                generated_files.push(format!("{}.kicad_pro", project_name));
             }
         }
-        Err(e) => {
-            if verbose {
-                println!("    Warning: Failed to generate project file: {}", e);
-            }
-        }
+        Err(e) => { if verbose { println!("    Warning: Failed to generate project file: {}", e); } }
     }
 
     // Generate BOM
@@ -508,30 +494,20 @@ pub fn run(target: Option<&str>, output: Option<&Path>, verbose: bool) -> CliRes
     match bom_exporter.export_to_string(BomFormat::Jlcpcb) {
         Ok(content) => {
             if let Err(e) = fs::write(&bom_path, &content) {
-                if verbose {
-                    println!("    Warning: Failed to write BOM: {}", e);
-                }
-            } else if verbose {
-                println!("    Generated: {}", bom_path.display());
+                if verbose { println!("    Warning: Failed to write BOM: {}", e); }
+            } else {
+                generated_files.push(format!("{}_bom.csv", project_name));
             }
         }
-        Err(e) => {
-            if verbose {
-                println!("    Warning: Failed to generate BOM: {}", e);
-            }
-        }
+        Err(e) => { if verbose { println!("    Warning: Failed to generate BOM: {}", e); } }
     }
 
-    println!("  {} built successfully", file_name);
-
-    if verbose {
-        println!();
-        println!("Summary:");
-        println!("  Modules:     {}", design.module_count());
-        println!("  Fields:      {}", design.field_count());
-        println!("  Connections: {}", design.connection_count());
-        println!("  Constraints: {}", design.constraint_count());
-    }
+    finish_spinner(&gen_spinner, &format!(
+        "Generated {} files in build/",
+        generated_files.len(),
+    ));
+    println!("  {} components, {} nets",
+        netlist.component_count(), netlist.net_count());
 
     Ok(())
 }

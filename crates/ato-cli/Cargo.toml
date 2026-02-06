@@ -26,6 +26,8 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
+indicatif = { workspace = true }
+console = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

@@ -6,6 +6,7 @@
 //! - Resolving package dependencies
 //! - Generating lock files for reproducibility
 
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -716,9 +717,25 @@ impl PackageManager {
 
         // Phase 1: Resolve all registry deps (including transitive) into a flat list
         if !registry_deps.is_empty() {
+            let mp = MultiProgress::new();
+            let resolve_style = ProgressStyle::with_template(
+                "{spinner:.cyan} {msg}"
+            ).unwrap().tick_strings(&[
+                "\u{2800}", "\u{2801}", "\u{2809}", "\u{281b}",
+                "\u{283b}", "\u{2839}", "\u{2838}", "\u{2830}",
+                "\u{2834}", "\u{2836}", "\u{2837}", "\u{2827}",
+                "\u{2807}", "\u{2803}", "\u{2802}", "\u{2800}",
+            ]);
+
+            let resolve_pb = mp.add(ProgressBar::new_spinner());
+            resolve_pb.set_style(resolve_style.clone());
+            resolve_pb.set_message("Resolving dependencies...");
+            resolve_pb.enable_steady_tick(std::time::Duration::from_millis(80));
+
             let client = RegistryClient::new();
             let mut all_resolved: Vec<PackageReleaseInfo> = Vec::new();
             let mut visited: HashSet<String> = HashSet::new();
+            let mut cached_count: usize = 0;
 
             // BFS to resolve all transitive dependencies
             let mut queue: Vec<(String, Option<String>)> = registry_deps;
@@ -727,16 +744,22 @@ impl PackageManager {
                     continue;
                 }
                 visited.insert(identifier.clone());
+                resolve_pb.set_message(format!("Resolving {}...", identifier));
 
                 // Check if already locked + cached
                 if let Some(locked) = self.lock_file.find(&identifier) {
                     let cached_path = self.cache.package_path(&identifier, &locked.resolved);
                     if cached_path.exists() {
-                        // Still need to link, but no download needed - add a sentinel
-                        // We need the info for linking, so fetch it (cheap API call) or reconstruct
-                        // Actually, for cached packages we can just link directly without full info
                         let target = self.modules_dir.join(&identifier);
                         self.link_package(&cached_path, &target)?;
+                        cached_count += 1;
+
+                        let cached_msg = format!(
+                            "{} {} (cached)",
+                            console::style("\u{2713}").green(),
+                            identifier
+                        );
+                        mp.println(cached_msg).ok();
 
                         // Queue transitive deps from lock file
                         for dep_id in &locked.dependencies {
@@ -768,6 +791,14 @@ impl PackageManager {
                     let cached_path = self.cache.package_path(&identifier, &info.version);
                     let target = self.modules_dir.join(&identifier);
                     self.link_package(&cached_path, &target)?;
+                    cached_count += 1;
+
+                    let cached_msg = format!(
+                        "{} {} (cached)",
+                        console::style("\u{2713}").green(),
+                        identifier
+                    );
+                    mp.println(cached_msg).ok();
 
                     // Update lock file
                     let dep_identifiers: Vec<String> = info.dependencies
@@ -785,14 +816,30 @@ impl PackageManager {
                 }
             }
 
+            resolve_pb.finish_and_clear();
+
             // Phase 2: Download + extract in parallel
             if !all_resolved.is_empty() {
                 let total = all_resolved.len();
-                println!("Downloading {} package{}...", total, if total == 1 { "" } else { "s" });
+                let download_style = ProgressStyle::with_template(
+                    "{spinner:.cyan} [{pos}/{len}] {msg}"
+                ).unwrap().tick_strings(&[
+                    "\u{2800}", "\u{2801}", "\u{2809}", "\u{281b}",
+                    "\u{283b}", "\u{2839}", "\u{2838}", "\u{2830}",
+                    "\u{2834}", "\u{2836}", "\u{2837}", "\u{2827}",
+                    "\u{2807}", "\u{2803}", "\u{2802}", "\u{2800}",
+                ]);
+
+                let progress = mp.add(ProgressBar::new(total as u64));
+                progress.set_style(download_style);
+                progress.set_message("Downloading packages...");
+                progress.enable_steady_tick(std::time::Duration::from_millis(80));
 
                 let counter = Arc::new(AtomicUsize::new(1));
                 let errors: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
                 let cache_dir = self.cache.cache_dir().to_path_buf();
+                let progress_ref = progress.clone();
+                let mp_ref = mp.clone();
 
                 let pool = rayon::ThreadPoolBuilder::new()
                     .num_threads(4)
@@ -803,8 +850,8 @@ impl PackageManager {
 
                 pool.install(|| {
                     all_resolved.par_iter().for_each(|info| {
-                        let n = counter.fetch_add(1, Ordering::SeqCst);
-                        println!("  Installing {} ({}/{})...", info.identifier, n, total);
+                        let _n = counter.fetch_add(1, Ordering::SeqCst);
+                        progress_ref.set_message(format!("Installing {}...", info.identifier));
 
                         let safe_id = info.identifier.replace('/', "-");
                         let pkg_cache_path = cache_dir.join(format!("{}-{}", safe_id, info.version));
@@ -895,8 +942,19 @@ impl PackageManager {
 
                         // Clean up zip
                         let _ = fs::remove_file(&zip_path);
+
+                        let done_msg = format!(
+                            "{} {} @{}",
+                            console::style("\u{2713}").green(),
+                            info.identifier,
+                            info.version,
+                        );
+                        mp_ref.println(done_msg).ok();
+                        progress_ref.inc(1);
                     });
                 });
+
+                progress.finish_and_clear();
 
                 // Check for errors
                 let errs = errors.lock().unwrap();
@@ -929,6 +987,32 @@ impl PackageManager {
                         dependencies: dep_identifiers,
                     });
                 }
+            }
+
+            // Print summary
+            let total_installed = visited.len();
+            let downloaded = total_installed - cached_count;
+            if total_installed > 0 {
+                let summary = if downloaded > 0 && cached_count > 0 {
+                    format!(
+                        "{} {} packages installed ({} downloaded, {} cached)",
+                        console::style("\u{2713}").green().bold(),
+                        total_installed, downloaded, cached_count
+                    )
+                } else if cached_count > 0 {
+                    format!(
+                        "{} {} packages installed (all cached)",
+                        console::style("\u{2713}").green().bold(),
+                        total_installed
+                    )
+                } else {
+                    format!(
+                        "{} {} packages installed",
+                        console::style("\u{2713}").green().bold(),
+                        total_installed
+                    )
+                };
+                mp.println(summary).ok();
             }
         }
 

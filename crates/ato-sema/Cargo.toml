@@ -25,6 +25,8 @@ toml = { workspace = true }
 reqwest = { workspace = true }
 zip = "2"
 rayon = { workspace = true }
+indicatif = { workspace = true }
+console = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

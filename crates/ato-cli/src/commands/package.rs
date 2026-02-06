@@ -14,15 +14,13 @@ use std::path::Path;
 pub fn add(package: &str, project_path: Option<&Path>) -> CliResult<()> {
     let project_root = find_project_root(project_path)?;
 
-    println!("Adding dependency: {}", package);
-
     let mut manager = PackageManager::new(project_root)
         .map_err(|e| CliError::io(format!("failed to initialize package manager: {}", e)))?;
 
     manager.add_dependency(package)
         .map_err(|e| CliError::io(format!("failed to add dependency: {}", e)))?;
 
-    println!("Successfully added {}", package);
+    println!("{} Added {}", console::style("\u{2713}").green(), package);
     Ok(())
 }
 
@@ -30,26 +28,19 @@ pub fn add(package: &str, project_path: Option<&Path>) -> CliResult<()> {
 pub fn install(project_path: Option<&Path>) -> CliResult<()> {
     let project_root = find_project_root(project_path)?;
 
-    println!("Installing dependencies...");
-
     let mut manager = PackageManager::new(project_root)
         .map_err(|e| CliError::io(format!("failed to initialize package manager: {}", e)))?;
 
     let deps = manager.config().dependencies.clone();
     if deps.is_empty() {
-        println!("No dependencies to install.");
+        println!("{} No dependencies to install.",
+            console::style("\u{2713}").green());
         return Ok(());
-    }
-
-    println!("Found {} dependencies:", deps.len());
-    for dep in &deps {
-        println!("  - {}", dep.identifier());
     }
 
     manager.install()
         .map_err(|e| CliError::io(format!("failed to install dependencies: {}", e)))?;
 
-    println!("\nDependencies installed successfully!");
     Ok(())
 }
 
@@ -57,15 +48,13 @@ pub fn install(project_path: Option<&Path>) -> CliResult<()> {
 pub fn update(project_path: Option<&Path>) -> CliResult<()> {
     let project_root = find_project_root(project_path)?;
 
-    println!("Updating dependencies...");
-
     let mut manager = PackageManager::new(project_root)
         .map_err(|e| CliError::io(format!("failed to initialize package manager: {}", e)))?;
 
     manager.update()
         .map_err(|e| CliError::io(format!("failed to update dependencies: {}", e)))?;
 
-    println!("Dependencies updated successfully!");
+    println!("{} Dependencies updated", console::style("\u{2713}").green());
     Ok(())
 }
 
@@ -73,15 +62,13 @@ pub fn update(project_path: Option<&Path>) -> CliResult<()> {
 pub fn remove(package: &str, project_path: Option<&Path>) -> CliResult<()> {
     let project_root = find_project_root(project_path)?;
 
-    println!("Removing dependency: {}", package);
-
     let mut manager = PackageManager::new(project_root)
         .map_err(|e| CliError::io(format!("failed to initialize package manager: {}", e)))?;
 
     manager.remove_dependency(package)
         .map_err(|e| CliError::io(format!("failed to remove dependency: {}", e)))?;
 
-    println!("Successfully removed {}", package);
+    println!("{} Removed {}", console::style("\u{2713}").green(), package);
     Ok(())
 }
 
