@@ -690,4 +690,109 @@ mod tests {
             panic!("Expected outer block");
         }
     }
+
+    #[test]
+    fn test_keyword_in_as_pin_name() {
+        let source = "module M:\n    pin in\n";
+        let (ast, errors) = parse_file(source);
+        assert!(errors.is_empty(), "Errors: {:?}", errors);
+        let file = ast.unwrap();
+        if let Statement::BlockDef(block) = &file.statements[0] {
+            if let Statement::PinDeclaration(pin) = &block.body[0] {
+                if let PinName::Identifier(id) = &pin.name {
+                    assert_eq!(id.name, "in");
+                } else {
+                    panic!("Expected identifier pin name");
+                }
+            } else {
+                panic!("Expected pin declaration, got {:?}", block.body[0]);
+            }
+        } else {
+            panic!("Expected block def");
+        }
+    }
+
+    #[test]
+    fn test_keyword_in_as_signal_name() {
+        let source = "module M:\n    signal in\n";
+        let (ast, errors) = parse_file(source);
+        assert!(errors.is_empty(), "Errors: {:?}", errors);
+        let file = ast.unwrap();
+        if let Statement::BlockDef(block) = &file.statements[0] {
+            if let Statement::SignalDef(sig) = &block.body[0] {
+                assert_eq!(sig.name.name, "in");
+            } else {
+                panic!("Expected signal def, got {:?}", block.body[0]);
+            }
+        } else {
+            panic!("Expected block def");
+        }
+    }
+
+    #[test]
+    fn test_keyword_in_field_reference() {
+        let source = "module M:\n    x.in ~ y.to\n";
+        let (ast, errors) = parse_file(source);
+        assert!(errors.is_empty(), "Errors: {:?}", errors);
+        let file = ast.unwrap();
+        if let Statement::BlockDef(block) = &file.statements[0] {
+            if let Statement::Connection(conn) = &block.body[0] {
+                if let Connectable::FieldRef(fr) = &conn.left {
+                    assert_eq!(fr.parts.len(), 2);
+                    assert_eq!(fr.parts[0].name.name, "x");
+                    assert_eq!(fr.parts[1].name.name, "in");
+                } else {
+                    panic!("Expected field ref");
+                }
+                if let Connectable::FieldRef(fr) = &conn.right {
+                    assert_eq!(fr.parts.len(), 2);
+                    assert_eq!(fr.parts[0].name.name, "y");
+                    assert_eq!(fr.parts[1].name.name, "to");
+                } else {
+                    panic!("Expected field ref");
+                }
+            } else {
+                panic!("Expected connection, got {:?}", block.body[0]);
+            }
+        } else {
+            panic!("Expected block def");
+        }
+    }
+
+    #[test]
+    fn test_for_loop_still_works_with_keyword_identifiers() {
+        let source = "module M:\n    container = new M[3]\n    for item in container:\n        pass\n";
+        let (ast, errors) = parse_file(source);
+        assert!(errors.is_empty(), "Errors: {:?}", errors);
+        let file = ast.unwrap();
+        if let Statement::BlockDef(block) = &file.statements[0] {
+            // Second statement should be the for loop
+            let for_found = block.body.iter().any(|s| matches!(s, Statement::For(_)));
+            assert!(for_found, "Should have a for loop. Body: {:?}", block.body);
+        } else {
+            panic!("Expected block def");
+        }
+    }
+
+    #[test]
+    fn test_multiple_keywords_as_pin_names() {
+        let source = "module M:\n    pin to\n    pin from\n    pin is\n    pin within\n";
+        let (ast, errors) = parse_file(source);
+        assert!(errors.is_empty(), "Errors: {:?}", errors);
+        let file = ast.unwrap();
+        if let Statement::BlockDef(block) = &file.statements[0] {
+            assert_eq!(block.body.len(), 4);
+            let names: Vec<String> = block.body.iter().filter_map(|s| {
+                if let Statement::PinDeclaration(p) = s {
+                    if let PinName::Identifier(id) = &p.name {
+                        return Some(id.name.clone());
+                    }
+                }
+                None
+            }).collect();
+            assert_eq!(names, vec!["to", "from", "is", "within"]);
+        } else {
+            panic!("Expected block def");
+        }
+    }
 }
