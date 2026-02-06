@@ -40,6 +40,7 @@ mod analyzer;
 pub mod resolution;
 pub mod constraint_collector;
 pub mod packages;
+pub mod embedded_stdlib;
 
 pub use error::{SemaError, SemaResult};
 pub use analyzer::Analyzer;

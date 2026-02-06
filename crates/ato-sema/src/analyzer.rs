@@ -315,14 +315,30 @@ impl Analyzer {
             return;
         }
 
-        // Read and parse the file
-        let source = match std::fs::read_to_string(path) {
-            Ok(s) => s,
-            Err(e) => {
-                self.errors.push(SemaError::IoError {
-                    message: format!("failed to read '{}': {}", path.display(), e),
-                });
-                return;
+        // Read and parse the file - check embedded stdlib first, then disk
+        let source = if path.starts_with("__embedded_stdlib__") {
+            let filename = path.file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or("");
+            let embedded_files = crate::embedded_stdlib::embedded_stdlib_files();
+            match embedded_files.iter().find(|(name, _)| *name == filename) {
+                Some((_, content)) => content.to_string(),
+                None => {
+                    self.errors.push(SemaError::IoError {
+                        message: format!("embedded stdlib file '{}' not found", filename),
+                    });
+                    return;
+                }
+            }
+        } else {
+            match std::fs::read_to_string(path) {
+                Ok(s) => s,
+                Err(e) => {
+                    self.errors.push(SemaError::IoError {
+                        message: format!("failed to read '{}': {}", path.display(), e),
+                    });
+                    return;
+                }
             }
         };
 

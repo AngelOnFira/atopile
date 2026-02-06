@@ -225,7 +225,7 @@ impl PathResolver {
             }
         }
 
-        // 4. Try in stdlib
+        // 4. Try in stdlib (on-disk)
         if let Some(stdlib_path) = &self.config.stdlib_path {
             let stdlib_file = stdlib_path.join(import_path);
             if self.loader.exists(&stdlib_file) {
@@ -234,6 +234,15 @@ impl PathResolver {
                         message: format!("failed to canonicalize '{}': {}", stdlib_file.display(), e),
                     });
             }
+        }
+
+        // 5. Try in embedded stdlib (compiled into binary)
+        let import_filename = import_path.file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or("");
+        let embedded_files = crate::embedded_stdlib::embedded_stdlib_files();
+        if embedded_files.iter().any(|(name, _)| *name == import_filename) {
+            return Ok(PathBuf::from("__embedded_stdlib__").join(import_filename));
         }
 
         Err(SemaError::file_not_found(import_path.display().to_string(), None))
@@ -321,6 +330,47 @@ impl StdlibIndexer {
         }
 
         files
+    }
+
+    /// Index embedded stdlib files (compiled into the binary).
+    pub fn index_embedded(registry: &mut ModuleRegistry) -> Result<(), Vec<SemaError>> {
+        let mut errors = Vec::new();
+        let files = crate::embedded_stdlib::embedded_stdlib_files();
+
+        for (filename, source) in files {
+            let path = PathBuf::from("__embedded_stdlib__").join(filename);
+            if registry.is_indexed(&path) {
+                continue;
+            }
+
+            match ato_parser::parse(source) {
+                Ok(ast) => {
+                    for stmt in &ast.statements {
+                        if let ato_parser::Statement::BlockDef(block) = stmt {
+                            let kind = match block.kind {
+                                ato_parser::BlockKind::Module => SymbolKind::Module,
+                                ato_parser::BlockKind::Interface => SymbolKind::Interface,
+                                ato_parser::BlockKind::Component => SymbolKind::Component,
+                            };
+                            registry.register_stdlib(&block.name.name, path.clone(), kind);
+                        }
+                    }
+                    registry.mark_indexed(path);
+                }
+                Err(parse_errors) => {
+                    errors.push(SemaError::ParseError {
+                        file: filename.to_string(),
+                        message: parse_errors.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; "),
+                    });
+                }
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
     }
 
     /// Index a single file and register its exported symbols.
@@ -572,10 +622,14 @@ impl Resolver {
     }
 
     /// Index the standard library.
+    /// Uses the on-disk stdlib path if available, otherwise falls back to embedded stdlib.
     pub fn index_stdlib(&mut self) -> Result<(), Vec<SemaError>> {
         if let Some(stdlib_path) = self.path_resolver.stdlib_path() {
             let indexer = StdlibIndexer::new(stdlib_path);
             indexer.index(&mut self.registry)?;
+        } else {
+            // Fall back to embedded stdlib compiled into the binary
+            StdlibIndexer::index_embedded(&mut self.registry)?;
         }
         Ok(())
     }
@@ -627,8 +681,12 @@ impl Resolver {
 
     /// Load and parse a file, returning its AST.
     pub fn load_file(&mut self, path: &Path) -> Result<&ParsedFile, SemaError> {
-        let canonical = std::fs::canonicalize(path)
-            .unwrap_or_else(|_| path.to_path_buf());
+        let canonical = if path.starts_with("__embedded_stdlib__") {
+            path.to_path_buf()
+        } else {
+            std::fs::canonicalize(path)
+                .unwrap_or_else(|_| path.to_path_buf())
+        };
 
         // Check for circular import
         if self.processing.contains(&canonical) {
@@ -645,11 +703,24 @@ impl Resolver {
         // Mark as processing
         self.processing.insert(canonical.clone());
 
-        // Read and parse
-        let source = std::fs::read_to_string(path)
-            .map_err(|e| SemaError::IoError {
-                message: format!("failed to read '{}': {}", path.display(), e),
-            })?;
+        // Read source - check embedded stdlib first, then disk
+        let source = if path.starts_with("__embedded_stdlib__") {
+            let filename = path.file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or("");
+            let embedded_files = crate::embedded_stdlib::embedded_stdlib_files();
+            embedded_files.iter()
+                .find(|(name, _)| *name == filename)
+                .map(|(_, content)| content.to_string())
+                .ok_or_else(|| SemaError::IoError {
+                    message: format!("embedded stdlib file '{}' not found", filename),
+                })?
+        } else {
+            std::fs::read_to_string(path)
+                .map_err(|e| SemaError::IoError {
+                    message: format!("failed to read '{}': {}", path.display(), e),
+                })?
+        };
 
         let ast = ato_parser::parse(&source).map_err(|errors| SemaError::ParseError {
             file: path.display().to_string(),
