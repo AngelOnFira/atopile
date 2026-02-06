@@ -118,6 +118,33 @@ impl Unit {
         matches!(self, Unit::Dimensionless)
     }
 
+    /// Compute the result unit of multiplying two units.
+    ///
+    /// Returns None if the multiplication is not supported.
+    pub fn multiply(left: &Unit, right: &Unit) -> Option<Unit> {
+        match (left, right) {
+            (u, Unit::Dimensionless) | (Unit::Dimensionless, u) => Some(*u),
+            (Unit::Volt, Unit::Ampere) | (Unit::Ampere, Unit::Volt) => Some(Unit::Watt),
+            (Unit::Ohm, Unit::Ampere) | (Unit::Ampere, Unit::Ohm) => Some(Unit::Volt),
+            _ => None,
+        }
+    }
+
+    /// Compute the result unit of dividing two units.
+    ///
+    /// Returns None if the division is not supported.
+    pub fn divide(left: &Unit, right: &Unit) -> Option<Unit> {
+        match (left, right) {
+            (u, Unit::Dimensionless) => Some(*u),
+            (a, b) if a == b => Some(Unit::Dimensionless),
+            (Unit::Volt, Unit::Ampere) => Some(Unit::Ohm),
+            (Unit::Volt, Unit::Ohm) => Some(Unit::Ampere),
+            (Unit::Watt, Unit::Volt) => Some(Unit::Ampere),
+            (Unit::Watt, Unit::Ampere) => Some(Unit::Volt),
+            _ => None,
+        }
+    }
+
     /// Parse a unit from a string.
     pub fn from_str(s: &str) -> Option<Unit> {
         match s.to_lowercase().as_str() {

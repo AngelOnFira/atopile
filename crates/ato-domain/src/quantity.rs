@@ -511,6 +511,51 @@ impl QuantityIntervalDisjoint {
             unit: self.unit,
         })
     }
+
+    /// Multiply by another set.
+    pub fn multiply(&self, other: &QuantityIntervalDisjoint) -> Result<QuantityIntervalDisjoint, QuantityError> {
+        let result_unit = Unit::multiply(&self.unit, &other.unit)
+            .ok_or(QuantityError::IncompatibleUnits {
+                left: self.unit,
+                right: other.unit,
+            })?;
+        Ok(QuantityIntervalDisjoint {
+            intervals: self.intervals.multiply(&other.intervals),
+            unit: result_unit,
+        })
+    }
+
+    /// Divide by another set.
+    pub fn divide(&self, other: &QuantityIntervalDisjoint) -> Result<QuantityIntervalDisjoint, QuantityError> {
+        let result_unit = Unit::divide(&self.unit, &other.unit)
+            .ok_or(QuantityError::IncompatibleUnits {
+                left: self.unit,
+                right: other.unit,
+            })?;
+        Ok(QuantityIntervalDisjoint {
+            intervals: self.intervals.divide(&other.intervals),
+            unit: result_unit,
+        })
+    }
+
+    /// Multiply by a scalar value.
+    pub fn scale(&self, factor: f64) -> QuantityIntervalDisjoint {
+        let scalar = DisjointIntervals::single(Interval::singleton(factor).unwrap());
+        QuantityIntervalDisjoint {
+            intervals: self.intervals.multiply(&scalar),
+            unit: self.unit,
+        }
+    }
+
+    /// Check if this set is unbounded.
+    pub fn is_unbounded(&self) -> bool {
+        self.intervals.is_unbounded()
+    }
+
+    /// Get the underlying disjoint intervals.
+    pub fn intervals(&self) -> &DisjointIntervals {
+        &self.intervals
+    }
 }
 
 impl PartialEq for QuantityIntervalDisjoint {
