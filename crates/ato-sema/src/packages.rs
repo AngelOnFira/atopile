@@ -6,11 +6,13 @@
 //! - Resolving package dependencies
 //! - Generating lock files for reproducibility
 
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
 
 use crate::error::SemaError;
 
@@ -691,13 +693,247 @@ impl PackageManager {
         &self.modules_dir
     }
 
-    /// Install all dependencies.
+    /// Install all dependencies, downloading registry packages in parallel.
     pub fn install(&mut self) -> Result<(), SemaError> {
         fs::create_dir_all(&self.modules_dir).map_err(|e| SemaError::IoError {
             message: format!("failed to create modules directory: {}", e),
         })?;
 
-        for dep in &self.config.dependencies.clone() {
+        // Separate registry deps from non-registry deps
+        let mut registry_deps: Vec<(String, Option<String>)> = Vec::new();
+        let mut other_deps: Vec<DependencySpec> = Vec::new();
+
+        for dep in &self.config.dependencies {
+            match dep {
+                DependencySpec::Registry { identifier, release } => {
+                    registry_deps.push((identifier.clone(), release.clone()));
+                }
+                other => {
+                    other_deps.push(other.clone());
+                }
+            }
+        }
+
+        // Phase 1: Resolve all registry deps (including transitive) into a flat list
+        if !registry_deps.is_empty() {
+            let client = RegistryClient::new();
+            let mut all_resolved: Vec<PackageReleaseInfo> = Vec::new();
+            let mut visited: HashSet<String> = HashSet::new();
+
+            // BFS to resolve all transitive dependencies
+            let mut queue: Vec<(String, Option<String>)> = registry_deps;
+            while let Some((identifier, release)) = queue.pop() {
+                if visited.contains(&identifier) {
+                    continue;
+                }
+                visited.insert(identifier.clone());
+
+                // Check if already locked + cached
+                if let Some(locked) = self.lock_file.find(&identifier) {
+                    let cached_path = self.cache.package_path(&identifier, &locked.resolved);
+                    if cached_path.exists() {
+                        // Still need to link, but no download needed - add a sentinel
+                        // We need the info for linking, so fetch it (cheap API call) or reconstruct
+                        // Actually, for cached packages we can just link directly without full info
+                        let target = self.modules_dir.join(&identifier);
+                        self.link_package(&cached_path, &target)?;
+
+                        // Queue transitive deps from lock file
+                        for dep_id in &locked.dependencies {
+                            if !visited.contains(dep_id) {
+                                queue.push((dep_id.clone(), None));
+                            }
+                        }
+                        continue;
+                    }
+                }
+
+                // Resolve from registry
+                let info = client.get_package(&identifier, release.as_deref())?;
+
+                // Queue transitive deps
+                if let Some(deps) = &info.dependencies {
+                    for dep in &deps.requires {
+                        if !visited.contains(&dep.identifier) {
+                            queue.push((dep.identifier.clone(), dep.release.clone()));
+                        }
+                    }
+                }
+
+                // Only add to download list if not already cached
+                if !self.cache.is_cached(&identifier, &info.version) {
+                    all_resolved.push(info);
+                } else {
+                    // Already cached, just link
+                    let cached_path = self.cache.package_path(&identifier, &info.version);
+                    let target = self.modules_dir.join(&identifier);
+                    self.link_package(&cached_path, &target)?;
+
+                    // Update lock file
+                    let dep_identifiers: Vec<String> = info.dependencies
+                        .as_ref()
+                        .map(|d| d.requires.iter().map(|r| r.identifier.clone()).collect())
+                        .unwrap_or_default();
+
+                    self.lock_file.upsert(LockedPackage {
+                        identifier: identifier.clone(),
+                        source: "registry".to_string(),
+                        resolved: info.version.clone(),
+                        checksum: None,
+                        dependencies: dep_identifiers,
+                    });
+                }
+            }
+
+            // Phase 2: Download + extract in parallel
+            if !all_resolved.is_empty() {
+                let total = all_resolved.len();
+                println!("Downloading {} package{}...", total, if total == 1 { "" } else { "s" });
+
+                let counter = Arc::new(AtomicUsize::new(1));
+                let errors: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+                let cache_dir = self.cache.cache_dir().to_path_buf();
+
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(4)
+                    .build()
+                    .map_err(|e| SemaError::IoError {
+                        message: format!("failed to create thread pool: {}", e),
+                    })?;
+
+                pool.install(|| {
+                    all_resolved.par_iter().for_each(|info| {
+                        let n = counter.fetch_add(1, Ordering::SeqCst);
+                        println!("  Installing {} ({}/{})...", info.identifier, n, total);
+
+                        let safe_id = info.identifier.replace('/', "-");
+                        let pkg_cache_path = cache_dir.join(format!("{}-{}", safe_id, info.version));
+
+                        // Each thread creates its own HTTP client
+                        let dl_client = reqwest::blocking::Client::builder()
+                            .user_agent("atopile-rust/0.1.0")
+                            .build();
+
+                        let dl_client = match dl_client {
+                            Ok(c) => c,
+                            Err(e) => {
+                                errors.lock().unwrap().push((
+                                    info.identifier.clone(),
+                                    format!("failed to create HTTP client: {}", e),
+                                ));
+                                return;
+                            }
+                        };
+
+                        // Download
+                        let response = match dl_client.get(&info.download_url).send() {
+                            Ok(r) => r,
+                            Err(e) => {
+                                errors.lock().unwrap().push((
+                                    info.identifier.clone(),
+                                    format!("download failed: {}", e),
+                                ));
+                                return;
+                            }
+                        };
+
+                        let bytes = match response.bytes() {
+                            Ok(b) => b,
+                            Err(e) => {
+                                errors.lock().unwrap().push((
+                                    info.identifier.clone(),
+                                    format!("failed to read response: {}", e),
+                                ));
+                                return;
+                            }
+                        };
+
+                        // Write zip to temp file
+                        let zip_path = pkg_cache_path.with_extension("zip");
+                        if let Some(parent) = zip_path.parent() {
+                            let _ = fs::create_dir_all(parent);
+                        }
+
+                        if let Err(e) = fs::write(&zip_path, &bytes) {
+                            errors.lock().unwrap().push((
+                                info.identifier.clone(),
+                                format!("failed to write zip: {}", e),
+                            ));
+                            return;
+                        }
+
+                        // Extract
+                        let file = match fs::File::open(&zip_path) {
+                            Ok(f) => f,
+                            Err(e) => {
+                                errors.lock().unwrap().push((
+                                    info.identifier.clone(),
+                                    format!("failed to open zip: {}", e),
+                                ));
+                                return;
+                            }
+                        };
+
+                        let mut archive = match zip::ZipArchive::new(file) {
+                            Ok(a) => a,
+                            Err(e) => {
+                                errors.lock().unwrap().push((
+                                    info.identifier.clone(),
+                                    format!("failed to read zip: {}", e),
+                                ));
+                                return;
+                            }
+                        };
+
+                        if let Err(e) = archive.extract(&pkg_cache_path) {
+                            errors.lock().unwrap().push((
+                                info.identifier.clone(),
+                                format!("failed to extract zip: {}", e),
+                            ));
+                            return;
+                        }
+
+                        // Clean up zip
+                        let _ = fs::remove_file(&zip_path);
+                    });
+                });
+
+                // Check for errors
+                let errs = errors.lock().unwrap();
+                if !errs.is_empty() {
+                    let msg = errs.iter()
+                        .map(|(id, e)| format!("  {}: {}", id, e))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    return Err(SemaError::IoError {
+                        message: format!("failed to download packages:\n{}", msg),
+                    });
+                }
+
+                // Phase 3: Link all downloaded packages and update lock file (sequential)
+                for info in &all_resolved {
+                    let cached_path = self.cache.package_path(&info.identifier, &info.version);
+                    let target = self.modules_dir.join(&info.identifier);
+                    self.link_package(&cached_path, &target)?;
+
+                    let dep_identifiers: Vec<String> = info.dependencies
+                        .as_ref()
+                        .map(|d| d.requires.iter().map(|r| r.identifier.clone()).collect())
+                        .unwrap_or_default();
+
+                    self.lock_file.upsert(LockedPackage {
+                        identifier: info.identifier.clone(),
+                        source: "registry".to_string(),
+                        resolved: info.version.clone(),
+                        checksum: None,
+                        dependencies: dep_identifiers,
+                    });
+                }
+            }
+        }
+
+        // Phase 4: Install non-registry deps (git, file) sequentially
+        for dep in &other_deps {
             self.install_dependency(dep)?;
         }
 
