@@ -88,7 +88,7 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Lower a statement within a block.
-    fn lower_block_statement(&mut self, stmt: &Statement, module_id: ModuleId, scope: &mut Scope) {
+    pub fn lower_block_statement(&mut self, stmt: &Statement, module_id: ModuleId, scope: &mut Scope) {
         match stmt {
             Statement::Connection(conn) => {
                 self.lower_connection(conn, module_id, scope);
@@ -344,11 +344,54 @@ impl<'a> Lowerer<'a> {
 
     fn resolve_field_path(&self, path: &FieldPath, scope: &Scope) -> Option<FieldId> {
         let first_name = path.first_name()?;
-        match scope.lookup(first_name)? {
-            Binding::Field(id) => Some(*id),
-            Binding::LoopVariable { source, .. } => Some(*source),
-            _ => None,
+        let first_id = match scope.lookup(first_name)? {
+            Binding::Field(id) => *id,
+            Binding::LoopVariable { source, .. } => *source,
+            _ => return None,
+        };
+
+        // Walk subsequent path parts through the instance hierarchy
+        let mut current_id = first_id;
+        let mut i = 1;
+        while i < path.parts.len() {
+            match &path.parts[i] {
+                FieldPathPart::Name(name) => {
+                    // Current field must be an instance with a resolved type
+                    let field = self.design.get_field(current_id)?;
+                    let type_module_id = match &field.kind {
+                        FieldKind::Instance { resolved_type: Some(mid), .. } => *mid,
+                        _ => return Some(current_id), // Can't navigate further; return what we have
+                    };
+                    // Look up the named sub-field in the target module
+                    let sub_field_id = self.design.find_field(type_module_id, name)?;
+                    current_id = sub_field_id;
+                    i += 1;
+                }
+                FieldPathPart::Index(_) => {
+                    // Array index - skip it, the field stays the same (array element)
+                    i += 1;
+                }
+                FieldPathPart::PinRef(num) => {
+                    // Pin reference like .1 - look for a pin with that number
+                    let field = self.design.get_field(current_id)?;
+                    let type_module_id = match &field.kind {
+                        FieldKind::Instance { resolved_type: Some(mid), .. } => *mid,
+                        _ => return Some(current_id),
+                    };
+                    let num_str = num.to_string();
+                    let module = self.design.get_module(type_module_id)?;
+                    // Find pin by number or name matching the number
+                    let pin_field_id = module.fields.iter().find_map(|&fid| {
+                        let f = self.design.get_field(fid)?;
+                        if f.name == num_str { Some(fid) } else { None }
+                    })?;
+                    current_id = pin_field_id;
+                    i += 1;
+                }
+            }
         }
+
+        Some(current_id)
     }
 
     fn lower_assert(&mut self, assert_stmt: &AssertStmt, module_id: ModuleId, scope: &Scope) {

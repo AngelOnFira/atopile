@@ -540,7 +540,7 @@ impl Analyzer {
         for stmt in &ast.statements {
             if let Statement::BlockDef(block) = stmt {
                 if block.name.name == module_name {
-                    // Process the module's body to extract fields
+                    // Pass 1: Extract fields from the module's body
                     for body_stmt in &block.body {
                         match body_stmt {
                             Statement::PinDeclaration(pin) => {
@@ -616,6 +616,32 @@ impl Analyzer {
                             _ => {}
                         }
                     }
+
+                    // Pass 2: Lower connections using the Lowerer.
+                    // Only process Connection and DirectedConnection statements
+                    // to avoid duplicating field creation from assignments etc.
+                    {
+                        let mut module_scope = scope.child_with_module(module_id);
+                        if let Some(module) = design.get_module(module_id) {
+                            for &field_id in &module.fields.clone() {
+                                if let Some(field) = design.get_field(field_id) {
+                                    module_scope.define_field(&field.name, field_id, field.span);
+                                }
+                            }
+                        }
+                        let mut lowerer = Lowerer::new(design);
+                        for body_stmt in &block.body {
+                            match body_stmt {
+                                Statement::Connection(_) | Statement::DirectedConnection(_) => {
+                                    lowerer.lower_block_statement(body_stmt, module_id, &mut module_scope);
+                                }
+                                _ => {}
+                            }
+                        }
+                        // Ignore lowerer errors for imported modules (non-critical)
+                        let _ = lowerer.take_errors();
+                    }
+
                     break;
                 }
             }
@@ -974,17 +1000,6 @@ module Outer:
 "#;
         let mut analyzer = Analyzer::new();
         let design = analyzer.analyze_source(source_without_assert).unwrap();
-
-        // Debug: Check if field was added to design
-        eprintln!("Design has {} modules", design.module_count());
-        for module in design.modules() {
-            eprintln!("Module '{}' has {} fields:", module.name, module.fields.len());
-            for field_id in &module.fields {
-                if let Some(field) = design.get_field(*field_id) {
-                    eprintln!("  - {} ({:?})", field.name, field.kind);
-                }
-            }
-        }
 
         // Verify Outer has the 'inner' field
         let outer = design.modules().iter().find(|m| m.name == "Outer").unwrap();

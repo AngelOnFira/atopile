@@ -807,160 +807,104 @@ impl<'a> NetlistBuilder<'a> {
         }
     }
 
-    /// Build nets from the connection graph and connections.
+    /// Build nets from connections using a path-based graph approach.
+    ///
+    /// Connections are module-scoped but the netlist is instance-scoped. We bridge
+    /// this gap by:
+    /// 1. Walking the module instance hierarchy to build prefix maps
+    /// 2. For each connection, prefixing endpoint paths with instance context
+    /// 3. Expanding interface connections into leaf-level sub-field equivalences
+    /// 4. Building a graph of path equivalences and finding connected components
+    /// 5. Resolving paths in each component to (component_ref, pin_name) pairs
     fn build_nets(&mut self) -> Result<(), ExportError> {
-        // Build reverse map: module_id -> list of (instance_field_id, ref_name)
-        let mut module_to_instances: HashMap<ModuleId, Vec<(FieldId, String)>> = HashMap::new();
-        for (&field_id, ref_name) in &self.instance_to_ref {
-            if let Some(field) = self.design.get_field(field_id) {
-                if let ato_ir::FieldKind::Instance {
-                    resolved_type: Some(type_id),
-                    ..
-                } = &field.kind
-                {
-                    module_to_instances
-                        .entry(*type_id)
-                        .or_default()
-                        .push((field_id, ref_name.clone()));
-                }
-            }
-        }
-        for (&(field_id, _idx), ref_name) in &self.array_instance_to_ref {
-            if let Some(field) = self.design.get_field(field_id) {
-                if let ato_ir::FieldKind::Instance {
-                    resolved_type: Some(type_id),
-                    ..
-                } = &field.kind
-                {
-                    module_to_instances
-                        .entry(*type_id)
-                        .or_default()
-                        .push((field_id, ref_name.clone()));
-                }
+        // Build instance_path -> component ref map from component properties
+        let mut instance_path_to_ref: HashMap<String, String> = HashMap::new();
+        for comp in &self.netlist.components {
+            if let Some(inst_path) = comp.properties.get("instance") {
+                instance_path_to_ref.insert(inst_path.clone(), comp.reference.clone());
             }
         }
 
-        // Build instance_name -> component ref map
-        let mut instance_name_to_ref: HashMap<String, String> = HashMap::new();
-        for (&field_id, ref_name) in &self.instance_to_ref {
-            if let Some(field) = self.design.get_field(field_id) {
-                instance_name_to_ref.insert(field.name.clone(), ref_name.clone());
-            }
+        // Build module_id -> list of instance paths for that module type
+        let mut module_to_instance_paths: HashMap<ModuleId, Vec<String>> = HashMap::new();
+        if let Some(entry_id) = self.entry_module {
+            module_to_instance_paths.entry(entry_id).or_default().push(String::new());
         }
-        // Also add array instance entries with indexed names (e.g., "resistors[0]")
-        for (&(field_id, idx), ref_name) in &self.array_instance_to_ref {
-            if let Some(field) = self.design.get_field(field_id) {
-                let indexed_name = format!("{}[{}]", field.name, idx);
-                instance_name_to_ref.insert(indexed_name, ref_name.clone());
+        self.build_module_instance_prefixes(&mut module_to_instance_paths);
+
+        // Build the path equivalence graph.
+        // Each node is a fully-qualified path string.
+        // Each edge means the two paths are electrically connected.
+        let mut graph: HashMap<String, Vec<String>> = HashMap::new();
+
+        let connections: Vec<_> = self.design.connections().to_vec();
+        for connection in &connections {
+            let parent_module = connection.parent;
+            let prefixes = module_to_instance_paths
+                .get(&parent_module)
+                .cloned()
+                .unwrap_or_default();
+
+            let effective_prefixes = if prefixes.is_empty() {
+                vec![String::new()]
+            } else {
+                prefixes
+            };
+
+            for prefix in &effective_prefixes {
+                self.add_connection_edges_to_graph(
+                    connection,
+                    prefix,
+                    &mut graph,
+                );
             }
         }
 
-        // Connection-based net building
-        let mut net_groups: HashMap<String, Vec<NetNode>> = HashMap::new();
+        // Find connected components in the graph via BFS
+        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut net_counter = 0u32;
 
-        for connection in self.design.connections() {
-            if connection.is_simple() {
-                if let (Some(left), Some(right)) = (connection.left(), connection.right()) {
-                    if let (Some(left_id), Some(right_id)) = (left.resolved, right.resolved) {
-                        let left_node =
-                            self.resolve_endpoint_to_node(left, left_id, &instance_name_to_ref);
-                        let right_node =
-                            self.resolve_endpoint_to_node(right, right_id, &instance_name_to_ref);
-
-                        if let (Some(ln), Some(rn)) = (left_node, right_node) {
-                            net_counter += 1;
-                            let net_key = format!("conn_{}", net_counter);
-                            let nodes = net_groups.entry(net_key).or_default();
-                            if !nodes.contains(&ln) {
-                                nodes.push(ln);
-                            }
-                            if !nodes.contains(&rn) {
-                                nodes.push(rn);
-                            }
-                        }
-                    }
-                }
-            } else {
-                for window in connection.endpoints.windows(2) {
-                    let (ep_a, ep_b) = (&window[0], &window[1]);
-                    if let (Some(a_id), Some(b_id)) = (ep_a.resolved, ep_b.resolved) {
-                        let node_a =
-                            self.resolve_endpoint_to_node(ep_a, a_id, &instance_name_to_ref);
-                        let node_b =
-                            self.resolve_endpoint_to_node(ep_b, b_id, &instance_name_to_ref);
-
-                        if let (Some(na), Some(nb)) = (node_a, node_b) {
-                            net_counter += 1;
-                            let net_key = format!("conn_{}", net_counter);
-                            let nodes = net_groups.entry(net_key).or_default();
-                            if !nodes.contains(&na) {
-                                nodes.push(na);
-                            }
-                            if !nodes.contains(&nb) {
-                                nodes.push(nb);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Graph-based net building for module-based (non-instance) components
-        let mut visited_fields: std::collections::HashSet<FieldId> =
-            std::collections::HashSet::new();
-
-        for field in self.design.fields() {
-            if !field.is_connectable() || visited_fields.contains(&field.id) {
+        let all_nodes: Vec<String> = graph.keys().cloned().collect();
+        for start_node in &all_nodes {
+            if visited.contains(start_node) {
                 continue;
             }
 
-            let connected = self.design.connection_graph().connected_component(field.id);
+            // BFS to find the connected component
+            let mut component: Vec<String> = Vec::new();
+            let mut queue: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+            queue.push_back(start_node.clone());
+            visited.insert(start_node.clone());
 
-            if connected.len() > 1 {
-                net_counter += 1;
-                let net_name = self.generate_net_name(&connected, net_counter);
-                let mut net = Net::new(&net_name);
-
-                for &field_id in &connected {
-                    visited_fields.insert(field_id);
-
-                    if let Some(field) = self.design.get_field(field_id) {
-                        if field.is_pin() {
-                            if let Some(ref_name) = self.module_to_ref.get(&field.parent) {
-                                let node = NetNode::new(ref_name.clone(), &field.name);
-                                if !net.nodes.contains(&node) {
-                                    net.add_node(node);
-                                }
-                            } else if let Some(instances) =
-                                module_to_instances.get(&field.parent)
-                            {
-                                if instances.len() == 1 {
-                                    let ref_name = &instances[0].1;
-                                    let node = NetNode::new(ref_name.clone(), &field.name);
-                                    if !net.nodes.contains(&node) {
-                                        net.add_node(node);
-                                    }
-                                }
-                            }
+            while let Some(current) = queue.pop_front() {
+                component.push(current.clone());
+                if let Some(neighbors) = graph.get(&current) {
+                    for neighbor in neighbors {
+                        if visited.insert(neighbor.clone()) {
+                            queue.push_back(neighbor.clone());
                         }
                     }
                 }
-
-                if net.nodes.len() > 1 {
-                    self.netlist.add_net(net);
-                }
-            } else {
-                visited_fields.insert(field.id);
             }
-        }
 
-        // Convert connection-based nets
-        for (_, nodes) in net_groups {
-            if nodes.len() > 1 {
+            // For each path in this connected component, try to resolve to a
+            // (component_ref, pin_name) pair
+            let mut net_nodes: Vec<NetNode> = Vec::new();
+            let mut seen_refs: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+            for path in &component {
+                if let Some(node) = self.resolve_path_to_component_pin(path, &instance_path_to_ref) {
+                    let key = (node.component.clone(), node.pin.clone());
+                    if seen_refs.insert(key) {
+                        net_nodes.push(node);
+                    }
+                }
+            }
+
+            if net_nodes.len() >= 2 {
                 net_counter += 1;
-                let mut net = Net::new(format!("Net{}", net_counter));
-                for node in nodes {
+                let net_name = format!("Net{}", net_counter);
+                let mut net = Net::new(net_name);
+                for node in net_nodes {
                     net.add_node(node);
                 }
                 self.netlist.add_net(net);
@@ -970,64 +914,342 @@ impl<'a> NetlistBuilder<'a> {
         Ok(())
     }
 
-    /// Resolve a connection endpoint to a NetNode.
+    /// Add edges to the path equivalence graph for a single connection.
     ///
-    /// Handles both simple instance paths (e.g., `r1.p1`) and array instance
-    /// paths (e.g., `resistors[0].p1`).
-    fn resolve_endpoint_to_node(
+    /// For interface-to-interface connections, recursively expands to sub-field
+    /// equivalences. For pin/signal connections, adds a direct edge.
+    fn add_connection_edges_to_graph(
         &self,
-        endpoint: &ato_ir::ConnectionEndpoint,
-        resolved_field_id: FieldId,
-        instance_name_to_ref: &HashMap<String, String>,
-    ) -> Option<NetNode> {
-        if let Some(field) = self.design.get_field(resolved_field_id) {
-            if !field.is_pin() {
-                return None;
-            }
+        connection: &ato_ir::Connection,
+        prefix: &str,
+        graph: &mut HashMap<String, Vec<String>>,
+    ) {
+        let endpoint_paths: Vec<String> = connection.endpoints.iter().filter_map(|ep| {
+            self.endpoint_to_path_string(ep, prefix)
+        }).collect();
 
-            // Check module_to_ref first (for non-instance components)
-            if let Some(ref_name) = self.module_to_ref.get(&field.parent) {
-                return Some(NetNode::new(ref_name.clone(), &field.name));
+        if connection.is_simple() && endpoint_paths.len() == 2 {
+            // Expand interface connections and add edges
+            self.add_path_equivalences(
+                &endpoint_paths[0],
+                &endpoint_paths[1],
+                connection.parent,
+                graph,
+                0,
+            );
+        } else if connection.is_directed() {
+            // For directed connections (bridge), add edges between consecutive pairs
+            for pair in endpoint_paths.windows(2) {
+                self.add_path_equivalences(
+                    &pair[0],
+                    &pair[1],
+                    connection.parent,
+                    graph,
+                    0,
+                );
             }
+        }
+    }
 
-            // Try to resolve via endpoint path (for instance components)
-            if let EndpointKind::FieldRef(path) = &endpoint.kind {
-                let instance_key = self.extract_instance_key_from_path(path);
-                if let Some(ref_name) = instance_name_to_ref.get(&instance_key) {
-                    return Some(NetNode::new(ref_name.clone(), &field.name));
+    /// Add path equivalences between two paths, expanding interface connections.
+    ///
+    /// When both paths point to instances of the same interface type, we expand
+    /// by adding equivalences for each matching sub-field. This handles cases like
+    /// `power_3v3 ~ microcontroller.power_3v3` where both are `ElectricPower`,
+    /// which means `power_3v3.hv ~ microcontroller.power_3v3.hv` and
+    /// `power_3v3.lv ~ microcontroller.power_3v3.lv`.
+    fn add_path_equivalences(
+        &self,
+        path_a: &str,
+        path_b: &str,
+        parent_module: ModuleId,
+        graph: &mut HashMap<String, Vec<String>>,
+        depth: u32,
+    ) {
+        if depth > 20 || path_a == path_b {
+            return;
+        }
+
+        // Try to figure out if both endpoints refer to interface instances
+        // by checking the resolved field types through the module hierarchy.
+        // We need to resolve the *local* part of the path (without prefix) to
+        // find the field's type.
+        let sub_fields = self.get_interface_sub_fields_for_path(path_a, parent_module)
+            .or_else(|| self.get_interface_sub_fields_for_path(path_b, parent_module));
+
+        if let Some(fields) = sub_fields {
+            // Both paths should have the same interface type - expand
+            for field_name in &fields {
+                let sub_a = format!("{}.{}", path_a, field_name);
+                let sub_b = format!("{}.{}", path_b, field_name);
+                self.add_path_equivalences(&sub_a, &sub_b, parent_module, graph, depth + 1);
+            }
+        } else {
+            // Leaf-level connection - add direct edge
+            graph.entry(path_a.to_string()).or_default().push(path_b.to_string());
+            graph.entry(path_b.to_string()).or_default().push(path_a.to_string());
+        }
+    }
+
+    /// Given a fully-qualified path, try to determine if it refers to an interface
+    /// instance, and if so, return the connectable sub-field names of that interface.
+    ///
+    /// For example, if `path` refers to an ElectricPower instance, returns
+    /// `Some(["hv", "lv"])`.
+    fn get_interface_sub_fields_for_path(
+        &self,
+        path: &str,
+        _parent_module: ModuleId,
+    ) -> Option<Vec<String>> {
+        // We need to resolve the path through the module hierarchy.
+        // The path may have a prefix from instance expansion, so we need to
+        // find which module context to resolve in.
+        //
+        // Strategy: try to resolve the path from the entry module by walking
+        // the instance hierarchy.
+        let parts: Vec<&str> = path.split('.').collect();
+        self.resolve_path_to_interface_fields(&parts, 0)
+    }
+
+    /// Walk a dotted path from the entry module through instance hierarchy,
+    /// and if the final element is an interface instance, return its sub-field names.
+    fn resolve_path_to_interface_fields(
+        &self,
+        parts: &[&str],
+        start_idx: usize,
+    ) -> Option<Vec<String>> {
+        let entry_id = self.entry_module?;
+        let mut current_module_id = entry_id;
+
+        for i in start_idx..parts.len() {
+            let part = parts[i];
+
+            // Handle array indices embedded in part name like "leds[0]"
+            let (field_name, _array_idx) = if let Some(bracket_pos) = part.find('[') {
+                let name = &part[..bracket_pos];
+                let idx_str = &part[bracket_pos + 1..part.len() - 1];
+                (name, idx_str.parse::<u32>().ok())
+            } else {
+                (part, None)
+            };
+
+            let module = self.design.get_module(current_module_id)?;
+            let field_id = module.get_field(field_name)?;
+            let field = self.design.get_field(field_id)?;
+
+            match &field.kind {
+                ato_ir::FieldKind::Instance { resolved_type: Some(type_id), .. } => {
+                    let target_module = self.design.get_module(*type_id)?;
+                    if i == parts.len() - 1 {
+                        // This is the last part - check if it's an interface
+                        if target_module.is_interface() {
+                            // Return the connectable sub-fields of this interface
+                            let sub_fields: Vec<String> = target_module.fields.iter()
+                                .filter_map(|&fid| {
+                                    let f = self.design.get_field(fid)?;
+                                    if f.is_connectable() {
+                                        Some(f.name.clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect();
+                            if !sub_fields.is_empty() {
+                                return Some(sub_fields);
+                            } else {
+                                return None; // Leaf interface (like Electrical) with no sub-fields
+                            }
+                        }
+                        return None;
+                    } else {
+                        current_module_id = *type_id;
+                    }
                 }
+                ato_ir::FieldKind::Pin { .. } | ato_ir::FieldKind::Signal => {
+                    // Reached a pin/signal - this is a leaf
+                    return None;
+                }
+                _ => return None,
             }
         }
         None
     }
 
-    /// Extract an instance lookup key from a field path.
-    ///
-    /// For simple paths like `[Name("r1"), Name("p1")]`, returns `"r1"`.
-    /// For array paths like `[Name("resistors"), Index(0), Name("p1")]`, returns `"resistors[0]"`.
-    fn extract_instance_key_from_path(&self, path: &ato_ir::FieldPath) -> String {
-        match path.parts.as_slice() {
-            [FieldPathPart::Name(name), FieldPathPart::Index(idx), ..] => {
-                format!("{}[{}]", name, idx)
+    /// Convert a connection endpoint to a fully-qualified path string.
+    fn endpoint_to_path_string(
+        &self,
+        endpoint: &ato_ir::ConnectionEndpoint,
+        prefix: &str,
+    ) -> Option<String> {
+        let ep_path_str = match &endpoint.kind {
+            EndpointKind::FieldRef(path) => self.format_field_path(path),
+            EndpointKind::SignalDef(name) => name.clone(),
+            EndpointKind::PinDef(name) => name.clone(),
+            EndpointKind::Resolved => {
+                if let Some(field_id) = endpoint.resolved {
+                    if let Some(field) = self.design.get_field(field_id) {
+                        field.name.clone()
+                    } else {
+                        return None;
+                    }
+                } else {
+                    return None;
+                }
             }
-            [FieldPathPart::Name(name), ..] => name.clone(),
-            _ => String::new(),
+        };
+
+        if prefix.is_empty() {
+            Some(ep_path_str)
+        } else {
+            Some(format!("{}.{}", prefix, ep_path_str))
         }
     }
 
-    /// Generate a net name from connected fields.
-    fn generate_net_name(&self, fields: &[FieldId], counter: u32) -> String {
-        // Look for a signal with a meaningful name
-        for &field_id in fields {
-            if let Some(field) = self.design.get_field(field_id) {
-                if field.is_signal() && !field.name.starts_with('_') {
-                    return field.name.clone();
+    /// Try to resolve a fully-qualified path to a (component_ref, pin_name) pair.
+    ///
+    /// For a path like "microcontroller.esp32_c3.package.VDD", tries progressively
+    /// shorter prefixes against the instance_path_to_ref map:
+    /// - "microcontroller.esp32_c3.package" with pin "VDD"
+    /// - "microcontroller.esp32_c3" with pin "package.VDD"
+    /// - etc.
+    fn resolve_path_to_component_pin(
+        &self,
+        full_path: &str,
+        instance_path_to_ref: &HashMap<String, String>,
+    ) -> Option<NetNode> {
+        let parts: Vec<&str> = full_path.split('.').collect();
+
+        // Try from longest prefix to shortest
+        for split_point in (1..parts.len()).rev() {
+            let instance_path = parts[..split_point].join(".");
+            let pin_path = parts[split_point..].join(".");
+
+            if let Some(ref_name) = instance_path_to_ref.get(&instance_path) {
+                if !pin_path.is_empty() {
+                    return Some(NetNode::new(ref_name.clone(), pin_path));
                 }
             }
         }
 
-        // Default to auto-generated name
-        format!("Net{}", counter)
+        None
+    }
+
+    /// Build a map from module_id to the list of instance path prefixes
+    /// for that module type.
+    fn build_module_instance_prefixes(
+        &self,
+        prefixes: &mut HashMap<ModuleId, Vec<String>>,
+    ) {
+        if let Some(entry_id) = self.entry_module {
+            self.walk_module_for_prefixes(entry_id, "", prefixes, &mut std::collections::HashSet::new());
+        } else {
+            for module in self.design.modules() {
+                if !module.is_interface() {
+                    prefixes.entry(module.id).or_default().push(String::new());
+                }
+            }
+        }
+    }
+
+    /// Recursively walk a module's instance hierarchy to build prefix map.
+    /// Includes both module instances AND interface instances (since connections
+    /// can reference interface fields).
+    fn walk_module_for_prefixes(
+        &self,
+        module_id: ModuleId,
+        current_prefix: &str,
+        prefixes: &mut HashMap<ModuleId, Vec<String>>,
+        visited: &mut std::collections::HashSet<(ModuleId, String)>,
+    ) {
+        let key = (module_id, current_prefix.to_string());
+        if !visited.insert(key) {
+            return;
+        }
+
+        prefixes.entry(module_id).or_default().push(current_prefix.to_string());
+
+        let module = match self.design.get_module(module_id) {
+            Some(m) => m,
+            None => return,
+        };
+
+        let instance_fields: Vec<(String, Option<u32>, Option<ModuleId>)> = module
+            .fields
+            .iter()
+            .filter_map(|&fid| {
+                let field = self.design.get_field(fid)?;
+                if let ato_ir::FieldKind::Instance {
+                    count,
+                    resolved_type,
+                    ..
+                } = &field.kind
+                {
+                    Some((field.name.clone(), *count, *resolved_type))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for (field_name, count, resolved_type) in instance_fields {
+            let type_module_id = match resolved_type {
+                Some(id) => id,
+                None => continue,
+            };
+
+            // Only skip interfaces that have no connections (pure leaf interfaces)
+            if let Some(target) = self.design.get_module(type_module_id) {
+                if target.is_interface() && target.connections.is_empty() {
+                    continue;
+                }
+            }
+
+            let instance_count = match count {
+                Some(n) if n > 1 => n,
+                _ => 1,
+            };
+
+            for idx in 0..instance_count {
+                let child_prefix = if instance_count > 1 {
+                    if current_prefix.is_empty() {
+                        format!("{}[{}]", field_name, idx)
+                    } else {
+                        format!("{}.{}[{}]", current_prefix, field_name, idx)
+                    }
+                } else if current_prefix.is_empty() {
+                    field_name.clone()
+                } else {
+                    format!("{}.{}", current_prefix, field_name)
+                };
+
+                self.walk_module_for_prefixes(type_module_id, &child_prefix, prefixes, visited);
+            }
+        }
+    }
+
+    /// Format a FieldPath into a dotted string representation.
+    fn format_field_path(&self, path: &ato_ir::FieldPath) -> String {
+        let mut result = String::new();
+        for part in path.parts.iter() {
+            match part {
+                FieldPathPart::Name(name) => {
+                    if !result.is_empty() && !result.ends_with('[') {
+                        result.push('.');
+                    }
+                    result.push_str(name);
+                }
+                FieldPathPart::Index(idx) => {
+                    result.push_str(&format!("[{}]", idx));
+                }
+                FieldPathPart::PinRef(num) => {
+                    if !result.is_empty() {
+                        result.push('.');
+                    }
+                    result.push_str(&num.to_string());
+                }
+            }
+        }
+        result
     }
 }
 

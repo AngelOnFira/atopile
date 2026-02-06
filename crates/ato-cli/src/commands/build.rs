@@ -16,6 +16,12 @@ use ato_export::{
     NetlistBuilder, KicadNetlistExporter, KicadSchematic, KicadPcb,
     KicadProject, Bom, BomExporter, BomFormat,
 };
+use ato_ir::{Design, FieldKind};
+use ato_parts::{
+    BasicPartSelector, CachedDatabase, ComponentType, LcscClient,
+    ParameterConstraint, PartCache, PartDatabase, PartQuery, PartSelector,
+    SelectionConfig,
+};
 use ato_sema::{Analyzer, AtoConfig, ConstraintCollector, SemaError};
 use ato_solver::SolverError;
 
@@ -314,7 +320,12 @@ pub fn run(target: Option<&str>, output: Option<&Path>, verbose: bool) -> CliRes
     if verbose {
         println!("  Phase 2.5: Part picking...");
     }
-    let _selected_parts = pick_parts(&_solved_params, verbose);
+    let picked_parts = pick_parts(&design, &_solved_params, verbose);
+
+    // Merge picked part info into solved params so the netlist builder can use them
+    for (key, value) in &picked_parts {
+        _solved_params.insert(key.clone(), value.clone());
+    }
 
     // Phase 3: Output generation
     if verbose {
@@ -378,7 +389,8 @@ pub fn run(target: Option<&str>, output: Option<&Path>, verbose: bool) -> CliRes
     });
 
     // Build netlist from design
-    let mut builder = NetlistBuilder::new(&design);
+    let mut builder = NetlistBuilder::new(&design)
+        .with_solved_values(_solved_params.clone());
     if let Some(entry_id) = entry_module {
         if verbose {
             if let Some(m) = design.get_module(entry_id) {
@@ -551,54 +563,343 @@ fn extract_solved_parameters(
     params
 }
 
-/// A selected part from the part picker.
-#[derive(Debug)]
-struct SelectedPart {
-    /// The parameter path this part was selected for.
-    _field_path: String,
-    /// LCSC part number.
-    _lcsc_id: String,
-    /// Human-readable description.
-    _description: String,
+/// Classify a module as a passive component type, if applicable.
+///
+/// Checks the module name and inheritance chain (via `super_type`) to determine
+/// if it's a Resistor, Capacitor, or Inductor.
+fn classify_passive(design: &Design, module_id: ato_ir::ModuleId) -> Option<ComponentType> {
+    let mut current = Some(module_id);
+    while let Some(mid) = current {
+        if let Some(module) = design.get_module(mid) {
+            let name_lower = module.name.to_lowercase();
+            if name_lower == "resistor" {
+                return Some(ComponentType::Resistor);
+            } else if name_lower == "capacitor" {
+                return Some(ComponentType::Capacitor);
+            } else if name_lower == "inductor" {
+                return Some(ComponentType::Inductor);
+            }
+            current = module.super_type;
+        } else {
+            break;
+        }
+    }
+    None
 }
 
-/// Pick parts for passive components based on solved parameter constraints.
+/// Get the primary parameter name for a passive component type.
+fn primary_param_name(component_type: ComponentType) -> &'static str {
+    match component_type {
+        ComponentType::Resistor => "resistance",
+        ComponentType::Capacitor => "capacitance",
+        ComponentType::Inductor => "inductance",
+        _ => "",
+    }
+}
+
+/// Parse a solved parameter value string into a (min, max) range in base units.
 ///
-/// This is a placeholder that will be connected when the solver produces
-/// concrete parameter ranges that can be mapped to component queries.
+/// Handles formats like:
+/// - "[9500, 10500] ohm"  (interval notation)
+/// - "10000 ohm"          (singleton)
+/// - "[100e-9, 120e-9] F" (SI notation)
+fn parse_parameter_range(value_str: &str) -> Option<(f64, f64)> {
+    let trimmed = value_str.trim();
+
+    // Try interval notation: [min, max] unit
+    if trimmed.starts_with('[') {
+        if let Some(bracket_end) = trimmed.find(']') {
+            let inner = &trimmed[1..bracket_end];
+            let parts: Vec<&str> = inner.split(',').collect();
+            if parts.len() == 2 {
+                let min: f64 = parts[0].trim().parse().ok()?;
+                let max: f64 = parts[1].trim().parse().ok()?;
+                return Some((min, max));
+            }
+        }
+    }
+
+    // Try singleton: "value unit"
+    let numeric_end = trimmed.find(|c: char| !c.is_ascii_digit() && c != '.' && c != '-' && c != 'e' && c != 'E' && c != '+')
+        .unwrap_or(trimmed.len());
+    if numeric_end > 0 {
+        if let Ok(val) = trimmed[..numeric_end].trim().parse::<f64>() {
+            // Give a +/- 5% tolerance window for singleton values
+            let margin = val.abs() * 0.05;
+            return Some((val - margin, val + margin));
+        }
+    }
+
+    None
+}
+
+/// Pick parts for passive components based on the design and solved parameters.
+///
+/// Walks the design IR to find instances of Resistor, Capacitor, and Inductor.
+/// For each, extracts the primary parameter constraint from the solver output,
+/// queries the JLCPCB/LCSC database via `CachedDatabase<LcscClient>`, and
+/// uses `BasicPartSelector` to pick the best match.
+///
+/// Returns a map of field path keys (like "r1.lcsc", "r1.footprint") to values,
+/// suitable for merging into the NetlistBuilder's solved_values.
 fn pick_parts(
+    design: &Design,
     solved_params: &HashMap<String, String>,
     verbose: bool,
-) -> Vec<SelectedPart> {
-    let selected = Vec::new();
+) -> HashMap<String, String> {
+    let mut result: HashMap<String, String> = HashMap::new();
 
-    if solved_params.is_empty() {
-        if verbose {
-            println!("    No solved parameters for part picking");
+    // Collect passive instances: (instance_field_name, component_type, module_name)
+    let mut passives: Vec<(String, ComponentType, String)> = Vec::new();
+
+    for module in design.modules() {
+        for &field_id in &module.fields {
+            if let Some(field) = design.get_field(field_id) {
+                if let FieldKind::Instance { ref type_ref, resolved_type, count, .. } = field.kind {
+                    // Determine the type: use resolved_type if available, else match by name
+                    let component_type = resolved_type
+                        .and_then(|mid| classify_passive(design, mid))
+                        .or_else(|| {
+                            let name_lower = type_ref.name().to_lowercase();
+                            match name_lower.as_str() {
+                                "resistor" => Some(ComponentType::Resistor),
+                                "capacitor" => Some(ComponentType::Capacitor),
+                                "inductor" => Some(ComponentType::Inductor),
+                                _ => None,
+                            }
+                        });
+
+                    if let Some(ct) = component_type {
+                        if let Some(array_count) = count {
+                            // Array instance: generate entries for each element
+                            for i in 0..array_count {
+                                let indexed_name = format!("{}[{}]", field.name, i);
+                                passives.push((indexed_name, ct, type_ref.name().to_string()));
+                            }
+                        } else {
+                            passives.push((field.name.clone(), ct, type_ref.name().to_string()));
+                        }
+                    }
+                }
+            }
         }
-        return selected;
+    }
+
+    if passives.is_empty() {
+        if verbose {
+            println!("    No passive components found for part picking");
+        }
+        return result;
     }
 
     if verbose {
-        println!("    {} solved parameter(s) available for part picking", solved_params.len());
+        println!("    Found {} passive instance(s) to pick parts for", passives.len());
     }
 
-    // Part picking integration point:
-    // When the solver produces concrete parameter ranges (e.g., resistance = 9.5k-10.5k),
-    // we can query the parts database:
-    //
-    // 1. Identify components that need parts (Resistor, Capacitor, etc.)
-    // 2. Map solved parameter names to component types
-    // 3. Build PartQuery objects from the parameter constraints
-    // 4. Query the CachedDatabase
-    // 5. Use BasicPartSelector to rank results
-    // 6. Return SelectedPart entries
-    //
-    // This requires the sema IR to expose component type information
-    // alongside parameter paths, which will be added as the sema and
-    // solver mature.
+    // Initialize the parts database (with cache for offline/performance)
+    let db: Box<dyn PartDatabase> = match PartCache::default_cache() {
+        Ok(cache) => match LcscClient::new() {
+            Ok(client) => Box::new(CachedDatabase::new(client, cache)),
+            Err(e) => {
+                if verbose {
+                    println!("    Warning: Could not create LCSC client: {}", e);
+                }
+                return result;
+            }
+        },
+        Err(e) => {
+            if verbose {
+                println!("    Warning: Could not create parts cache: {}; trying direct client", e);
+            }
+            match LcscClient::new() {
+                Ok(client) => Box::new(client) as Box<dyn PartDatabase>,
+                Err(e) => {
+                    if verbose {
+                        println!("    Warning: Could not create LCSC client: {}", e);
+                    }
+                    return result;
+                }
+            }
+        }
+    };
 
-    selected
+    let selector = BasicPartSelector::new();
+    let selection_config = SelectionConfig::new()
+        .with_min_stock(100)
+        .with_max_results(5);
+
+    for (instance_name, component_type, _type_name) in &passives {
+        let param_name = primary_param_name(*component_type);
+        if param_name.is_empty() {
+            continue;
+        }
+
+        // Look up the solved parameter value using field path convention
+        // Try both "instance.param" and just "param" (for top-level)
+        let param_key = format!("{}.{}", instance_name, param_name);
+        let value_str = solved_params.get(&param_key)
+            .or_else(|| solved_params.get(param_name));
+
+        let value_range = value_str.and_then(|v| parse_parameter_range(v));
+
+        // Also look for a package constraint
+        let package_key = format!("{}.package", instance_name);
+        let package = solved_params.get(&package_key)
+            .map(|s| s.trim_matches('"').to_string());
+
+        // Build the query
+        let mut query = PartQuery::for_type(*component_type);
+        if let Some((min, max)) = value_range {
+            if min.is_finite() && max.is_finite() && min > 0.0 && max > 0.0 {
+                query = query.with_param(param_name, ParameterConstraint::between(min, max));
+            } else {
+                if verbose {
+                    println!("    Skipping {} - parameter range not finite/positive: ({}, {})",
+                        instance_name, min, max);
+                }
+                continue;
+            }
+        } else {
+            if verbose {
+                println!("    Skipping {} - no solved {} value found", instance_name, param_name);
+            }
+            continue;
+        }
+
+        if let Some(ref pkg) = package {
+            query = query.with_package(pkg.clone());
+        }
+        query = query.with_min_stock(100).with_limit(20);
+
+        // Query the database
+        match db.query(&query) {
+            Ok(candidates) => {
+                if candidates.is_empty() {
+                    if verbose {
+                        println!("    Warning: No parts found for {} ({:?})", instance_name, component_type);
+                    }
+                    continue;
+                }
+
+                // Select the best part
+                let selections = selector.select(candidates, &selection_config);
+                if let Some(best) = selections.first() {
+                    let part = &best.part;
+                    if verbose {
+                        println!("    {} -> {} ({}, {})",
+                            instance_name,
+                            part.id,
+                            part.manufacturer.part_number,
+                            part.package.name,
+                        );
+                    }
+
+                    // Store LCSC ID and footprint for this instance
+                    if let Some(lcsc) = part.lcsc_id() {
+                        result.insert(
+                            format!("{}.lcsc", instance_name),
+                            lcsc.to_string(),
+                        );
+                        // Also store as top-level key for simple cases
+                        result.insert("lcsc".to_string(), lcsc.to_string());
+                    }
+
+                    // Map package name to KiCad footprint naming convention
+                    let footprint = match *component_type {
+                        ComponentType::Resistor => {
+                            format!("Resistor_SMD:R_{}", kicad_footprint_suffix(&part.package.name))
+                        }
+                        ComponentType::Capacitor => {
+                            format!("Capacitor_SMD:C_{}", kicad_footprint_suffix(&part.package.name))
+                        }
+                        ComponentType::Inductor => {
+                            format!("Inductor_SMD:L_{}", kicad_footprint_suffix(&part.package.name))
+                        }
+                        _ => part.package.name.clone(),
+                    };
+
+                    result.insert(
+                        format!("{}.footprint", instance_name),
+                        footprint.clone(),
+                    );
+                    // Also store as top-level for single-passive designs
+                    result.insert("footprint".to_string(), footprint);
+
+                    // Store value string for BOM
+                    if let Some((min, max)) = value_range {
+                        let value_display = format_part_value(*component_type, (min + max) / 2.0);
+                        result.insert(
+                            format!("{}.value", instance_name),
+                            value_display,
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                if verbose {
+                    println!("    Warning: Database query failed for {}: {}", instance_name, e);
+                }
+            }
+        }
+    }
+
+    if verbose && !result.is_empty() {
+        println!("    Picked parts for {} instance(s)", result.len() / 3);
+    }
+
+    result
+}
+
+/// Map an imperial package name (e.g., "0402") to KiCad's footprint suffix.
+fn kicad_footprint_suffix(package: &str) -> String {
+    match package {
+        "0201" => "0201_0603Metric".to_string(),
+        "0402" => "0402_1005Metric".to_string(),
+        "0603" => "0603_1608Metric".to_string(),
+        "0805" => "0805_2012Metric".to_string(),
+        "1206" => "1206_3216Metric".to_string(),
+        "1210" => "1210_3225Metric".to_string(),
+        "1812" => "1812_4532Metric".to_string(),
+        "2010" => "2010_5025Metric".to_string(),
+        "2512" => "2512_6332Metric".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// Format a parameter value for human-readable display in BOM.
+fn format_part_value(component_type: ComponentType, value: f64) -> String {
+    match component_type {
+        ComponentType::Resistor => {
+            if value >= 1_000_000.0 {
+                format!("{:.1}M", value / 1_000_000.0)
+            } else if value >= 1_000.0 {
+                format!("{:.1}k", value / 1_000.0)
+            } else {
+                format!("{:.1}", value)
+            }
+        }
+        ComponentType::Capacitor => {
+            if value >= 1e-3 {
+                format!("{:.1}mF", value * 1e3)
+            } else if value >= 1e-6 {
+                format!("{:.1}uF", value * 1e6)
+            } else if value >= 1e-9 {
+                format!("{:.1}nF", value * 1e9)
+            } else {
+                format!("{:.1}pF", value * 1e12)
+            }
+        }
+        ComponentType::Inductor => {
+            if value >= 1e-3 {
+                format!("{:.1}mH", value * 1e3)
+            } else if value >= 1e-6 {
+                format!("{:.1}uH", value * 1e6)
+            } else {
+                format!("{:.1}nH", value * 1e9)
+            }
+        }
+        _ => format!("{}", value),
+    }
 }
 
 /// Convert semantic errors to CLI error info.
@@ -763,9 +1064,57 @@ builds:
     }
 
     #[test]
-    fn test_pick_parts_empty() {
+    fn test_pick_parts_empty_design() {
+        let design = ato_ir::Design::new();
         let params = HashMap::new();
-        let parts = pick_parts(&params, false);
+        let parts = pick_parts(&design, &params, false);
         assert!(parts.is_empty());
+    }
+
+    #[test]
+    fn test_pick_parts_no_passives() {
+        let mut design = ato_ir::Design::new();
+        let module_id = design.create_module("App", ato_ir::ModuleKind::Module);
+        design.add_field(module_id, "p1", ato_ir::FieldKind::pin("p1"));
+
+        let params = HashMap::new();
+        let parts = pick_parts(&design, &params, false);
+        assert!(parts.is_empty());
+    }
+
+    #[test]
+    fn test_classify_passive() {
+        let mut design = ato_ir::Design::new();
+        let resistor_id = design.create_module("Resistor", ato_ir::ModuleKind::Module);
+        let capacitor_id = design.create_module("Capacitor", ato_ir::ModuleKind::Module);
+
+        assert_eq!(classify_passive(&design, resistor_id), Some(ComponentType::Resistor));
+        assert_eq!(classify_passive(&design, capacitor_id), Some(ComponentType::Capacitor));
+    }
+
+    #[test]
+    fn test_parse_parameter_range() {
+        // Interval notation
+        assert_eq!(parse_parameter_range("[9500, 10500] ohm"), Some((9500.0, 10500.0)));
+        // Singleton
+        let (min, max) = parse_parameter_range("10000 ohm").unwrap();
+        assert!((min - 9500.0).abs() < 1.0);
+        assert!((max - 10500.0).abs() < 1.0);
+        // Invalid
+        assert!(parse_parameter_range("").is_none());
+    }
+
+    #[test]
+    fn test_kicad_footprint_suffix() {
+        assert_eq!(kicad_footprint_suffix("0402"), "0402_1005Metric");
+        assert_eq!(kicad_footprint_suffix("0603"), "0603_1608Metric");
+        assert_eq!(kicad_footprint_suffix("SOT-23"), "SOT-23");
+    }
+
+    #[test]
+    fn test_format_part_value() {
+        assert_eq!(format_part_value(ComponentType::Resistor, 10000.0), "10.0k");
+        assert_eq!(format_part_value(ComponentType::Capacitor, 100e-9), "100.0nF");
+        assert_eq!(format_part_value(ComponentType::Inductor, 10e-6), "10.0uH");
     }
 }
