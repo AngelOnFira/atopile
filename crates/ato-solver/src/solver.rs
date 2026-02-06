@@ -77,6 +77,22 @@ pub struct SolverState {
     pub predicates: HashMap<PredicateId, Predicate>,
 }
 
+impl SolverState {
+    /// Get the solved value/domain of a parameter from the solver result.
+    ///
+    /// Returns the parameter's narrowed domain as a `Literal::Quantity` if
+    /// the domain has been narrowed from unbounded. Returns `None` if the
+    /// parameter is not found or still has an unbounded domain.
+    pub fn get_parameter_value(&self, param_id: ParameterId) -> Option<Literal> {
+        let param = self.expressions.get_parameter(param_id)?;
+        if param.domain.is_unbounded() {
+            None
+        } else {
+            Some(Literal::Quantity(param.domain.clone()))
+        }
+    }
+}
+
 /// Result of the solver.
 pub type SolverResult = Result<SolverState, SolverError>;
 
@@ -286,6 +302,20 @@ impl Solver {
                 Ok(Some(false)) // Contradicted
             }
             Err(e) => Err(e),
+        }
+    }
+
+    /// Get the solved value/domain of a parameter after solving.
+    ///
+    /// Returns the parameter's narrowed domain as a `Literal::Quantity` if
+    /// the domain has been narrowed from unbounded. Returns `None` if the
+    /// parameter is not found or still has an unbounded domain.
+    pub fn get_parameter_value(&self, param_id: ParameterId) -> Option<Literal> {
+        let param = self.expressions.get_parameter(param_id)?;
+        if param.domain.is_unbounded() {
+            None
+        } else {
+            Some(Literal::Quantity(param.domain.clone()))
         }
     }
 
