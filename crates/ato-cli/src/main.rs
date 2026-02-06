@@ -44,9 +44,10 @@ enum Commands {
 
     /// Build a project (full compilation).
     Build {
-        /// Path to the .ato file to build.
-        #[arg(value_name = "FILE")]
-        file: PathBuf,
+        /// Path to .ato file or build target name from ato.yaml.
+        /// If omitted, uses the "default" target from ato.yaml.
+        #[arg(value_name = "TARGET")]
+        target: Option<String>,
 
         /// Output directory.
         #[arg(short, long)]
@@ -148,8 +149,8 @@ fn main() -> ExitCode {
     let result = match cli.command {
         Commands::Parse { file, format } => commands::parse::run(&file, &format),
         Commands::Check { file, verbose } => commands::check::run(&file, verbose),
-        Commands::Build { file, output, verbose } => {
-            commands::build::run(&file, output.as_deref(), verbose)
+        Commands::Build { target, output, verbose } => {
+            commands::build::run(target.as_deref(), output.as_deref(), verbose)
         }
         Commands::Parts { action } => match action {
             PartsAction::Search {
