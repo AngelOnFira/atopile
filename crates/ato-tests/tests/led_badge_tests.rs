@@ -699,6 +699,154 @@ fn test_led_badge_kicad_project_export() {
 }
 
 // ============================================================================
+// 4d. Exact BOM Component Count Test (matches BOM output)
+// ============================================================================
+
+#[test]
+fn test_led_badge_bom_exact_counts() {
+    let netlist = build_led_badge_netlist().unwrap();
+
+    let mut prefix_counts: HashMap<String, usize> = HashMap::new();
+    for comp in &netlist.components {
+        let prefix = comp.reference.trim_end_matches(|c: char| c.is_ascii_digit())
+            .to_string();
+        *prefix_counts.entry(prefix).or_default() += 1;
+    }
+
+    // Expected counts from the BOM: C115, LED100, R14, L1, J1, U7
+    let led_count = *prefix_counts.get("LED").unwrap_or(&0);
+    let cap_count = *prefix_counts.get("C").unwrap_or(&0);
+    let res_count = *prefix_counts.get("R").unwrap_or(&0);
+    let ind_count = *prefix_counts.get("L").unwrap_or(&0);
+    let conn_count = *prefix_counts.get("J").unwrap_or(&0);
+    let ic_count = *prefix_counts.get("U").unwrap_or(&0);
+
+    assert_eq!(led_count, 100, "Expected 100 LEDs, got {}", led_count);
+    assert_eq!(cap_count, 115, "Expected 115 capacitors, got {}", cap_count);
+    assert_eq!(res_count, 14, "Expected 14 resistors, got {}", res_count);
+    assert_eq!(ind_count, 1, "Expected 1 inductor, got {}", ind_count);
+    assert_eq!(conn_count, 1, "Expected 1 connector, got {}", conn_count);
+    assert_eq!(ic_count, 7, "Expected 7 ICs, got {}", ic_count);
+
+    let total = netlist.component_count();
+    assert_eq!(total, 238, "Expected 238 total components, got {}", total);
+}
+
+#[test]
+fn test_led_badge_netlist_has_inductor() {
+    let netlist = build_led_badge_netlist().unwrap();
+
+    // Match L followed by digit (to exclude LED which also starts with L)
+    let ind_count = netlist.components.iter()
+        .filter(|c| {
+            c.reference.starts_with('L')
+                && c.reference.chars().nth(1).map_or(false, |ch| ch.is_ascii_digit())
+        })
+        .count();
+
+    assert_eq!(ind_count, 1, "Expected exactly 1 inductor, got {}", ind_count);
+}
+
+#[test]
+fn test_led_badge_package_components_have_footprints_and_lcsc() {
+    let netlist = build_led_badge_netlist().unwrap();
+
+    // Package-level components that should have both footprint and LCSC:
+    // J1 (connector), U1 (ESP32), U2 (microphone), U3 (USB-C), U4 (buck-boost), U5 (charger)
+    // LED1-LED100 (addressable LEDs)
+    let package_refs = ["J1", "U1", "U2", "U3", "U4", "U5"];
+
+    for ref_name in &package_refs {
+        let comp = netlist.components.iter()
+            .find(|c| c.reference == *ref_name)
+            .unwrap_or_else(|| panic!("Component {} not found in netlist", ref_name));
+
+        assert!(comp.footprint.is_some(),
+            "Component {} should have a footprint, got None", ref_name);
+        assert!(comp.properties.contains_key("lcsc"),
+            "Component {} should have LCSC part number, properties: {:?}",
+            ref_name, comp.properties.keys().collect::<Vec<_>>());
+    }
+}
+
+// ============================================================================
+// 4e. Trait Propagation Tests
+// ============================================================================
+
+#[test]
+fn test_led_badge_imported_modules_have_traits() {
+    let design = analyze_led_badge().unwrap();
+
+    // Modules imported from packages should have traits propagated from their
+    // base classes (inheritance chain). Specifically, package-level components
+    // should have traits like has_designator_prefix and is_atomic_part.
+    let mut modules_with_traits = 0;
+    let mut total_trait_count = 0;
+
+    for module in design.modules() {
+        if !module.traits.is_empty() {
+            modules_with_traits += 1;
+            total_trait_count += module.traits.len();
+        }
+    }
+
+    // We expect at least some modules to have traits (stdlib types like Resistor,
+    // Capacitor, and package components like SK6805EC20_package)
+    assert!(modules_with_traits > 0,
+        "Expected at least some modules with traits, got 0 out of {} modules",
+        design.module_count());
+    assert!(total_trait_count > 0,
+        "Expected at least some traits across all modules, got 0");
+
+    eprintln!("Trait propagation: {} modules have traits, {} total traits",
+        modules_with_traits, total_trait_count);
+}
+
+#[test]
+fn test_led_badge_designator_prefix_traits_exist() {
+    let design = analyze_led_badge().unwrap();
+
+    // Check that has_designator_prefix traits are present on relevant modules.
+    // These traits are what drive the designator prefix assignment (R, C, LED, etc.)
+    let mut modules_with_designator_prefix = Vec::new();
+
+    for module in design.modules() {
+        for trait_ref in &module.traits {
+            if trait_ref.name.name() == "has_designator_prefix" {
+                modules_with_designator_prefix.push(module.name.clone());
+            }
+        }
+    }
+
+    // At minimum, stdlib Resistor and Capacitor should have this trait
+    assert!(!modules_with_designator_prefix.is_empty(),
+        "Expected at least some modules with has_designator_prefix trait");
+    eprintln!("Modules with has_designator_prefix: {:?}", modules_with_designator_prefix);
+}
+
+#[test]
+fn test_led_badge_part_picked_traits_exist() {
+    let design = analyze_led_badge().unwrap();
+
+    // Package-level components should have has_part_picked traits
+    // (these carry LCSC part numbers from the auto-generated part files)
+    let mut modules_with_part_picked = Vec::new();
+
+    for module in design.modules() {
+        for trait_ref in &module.traits {
+            if trait_ref.name.name() == "has_part_picked" {
+                modules_with_part_picked.push(module.name.clone());
+            }
+        }
+    }
+
+    // Package components (ESP32, microphone, USB connector, etc.) should have this
+    assert!(!modules_with_part_picked.is_empty(),
+        "Expected at least some modules with has_part_picked trait (for LCSC numbers)");
+    eprintln!("Modules with has_part_picked: {:?}", modules_with_part_picked);
+}
+
+// ============================================================================
 // 5. Summary / Regression Test
 // ============================================================================
 
