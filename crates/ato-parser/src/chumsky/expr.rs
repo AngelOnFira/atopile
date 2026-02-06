@@ -19,12 +19,34 @@ pub fn tok(kind: TokenKind) -> impl Parser<Token, Token, Error = Simple<Token>> 
 }
 
 /// Parse an identifier.
-/// Some reserved keywords can be used as identifiers in certain contexts (e.g., template arguments).
+/// Keywords can be used as identifiers in certain contexts (e.g., pin names,
+/// signal names, field references like `module.in`, template arguments).
+/// This is safe because in statement-level parsing, keyword-specific parsers
+/// (block_def, for_stmt, import_stmt, etc.) are tried before name_starting_stmt,
+/// so keywords are consumed as keywords when they start a statement.
 pub fn identifier() -> impl Parser<Token, Identifier, Error = Simple<Token>> + Clone {
     filter(|t: &Token| {
         matches!(
             t.kind,
             TokenKind::Name
+                // Active keywords that can also appear as identifiers
+                | TokenKind::In
+                | TokenKind::To
+                | TokenKind::From
+                | TokenKind::Is
+                | TokenKind::Within
+                | TokenKind::Pin
+                | TokenKind::Signal
+                | TokenKind::New
+                | TokenKind::Assert
+                | TokenKind::Pass
+                | TokenKind::Trait
+                | TokenKind::Component
+                | TokenKind::Module
+                | TokenKind::Interface
+                | TokenKind::Import
+                | TokenKind::For
+                // Reserved keywords (already allowed)
                 | TokenKind::Int
                 | TokenKind::Float
                 | TokenKind::StringKw
