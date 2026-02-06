@@ -12,9 +12,9 @@ use ato_ir::{
 };
 use ato_parser::{
     Assignable, AssertStmt, Assignment, AssignTarget, BinaryOp, BlockDef, CompareOpKind, Comparison,
-    Connectable, Connection, ConnectionDirection, DirectedConnection, Expression, FieldRef,
-    File, ForStmt, Iterable, Literal, PhysicalLiteral, PinDeclaration, PinName,
-    Quantity, Slice, Statement, Tolerance,
+    Connectable, Connection, ConnectionDirection, CumAssignment, CumOperator, DirectedConnection,
+    Expression, FieldRef, File, ForStmt, Iterable, Literal, PhysicalLiteral, PinDeclaration,
+    PinName, Quantity, Retype, SetAssignment, SetOperator, Slice, Statement, Tolerance,
 };
 
 /// Lowers an AST to IR.
@@ -110,6 +110,15 @@ impl<'a> Lowerer<'a> {
                 // Convert physical value assignments to constraints
                 self.lower_assignment(assign, module_id, scope);
             }
+            Statement::CumAssignment(cum) => {
+                self.lower_cum_assignment(cum, module_id, scope);
+            }
+            Statement::SetAssignment(set) => {
+                self.lower_set_assignment(set, module_id, scope);
+            }
+            Statement::Retype(retype) => {
+                self.lower_retype(retype, module_id, scope);
+            }
             _ => {
                 // Other statements handled during name resolution
             }
@@ -122,34 +131,25 @@ impl<'a> Lowerer<'a> {
         let right = self.lower_connectable(&conn.right, module_id, scope);
 
         let _conn_id = self.design.add_connection(module_id, left, right);
-        // Note: Span is not set as the connections field is private.
-        // The span could be added to the add_connection API if needed.
     }
 
     /// Lower a directed connection (a ~> b ~> c).
-    ///
-    /// For bridge elements (those with can_bridge or can_bridge_by_name trait),
-    /// expands to use the appropriate input/output fields.
     fn lower_directed_connection(&mut self, conn: &DirectedConnection, module_id: ModuleId, scope: &Scope) {
-        // Lower all connectables to endpoints
         let elements: Vec<(ConnectionEndpoint, &Connectable)> = conn.elements
             .iter()
             .map(|e| (self.lower_connectable(e, module_id, scope), e))
             .collect();
 
         if elements.len() < 2 {
-            return; // Need at least two elements
+            return;
         }
 
-        // Determine if this is forward or backward connection
         let is_forward = matches!(conn.direction, ConnectionDirection::Forward);
 
-        // Check if any middle elements are bridges
         let has_bridges = elements.iter().enumerate().any(|(i, (ep, _))| {
             i > 0 && i < elements.len() - 1 && self.is_bridge_element(ep)
         });
 
-        // If no bridges, use the original directed connection approach
         if !has_bridges {
             let endpoints: Vec<ConnectionEndpoint> = elements.into_iter().map(|(ep, _)| ep).collect();
             let kind = match conn.direction {
@@ -164,17 +164,13 @@ impl<'a> Lowerer<'a> {
             return;
         }
 
-        // Process connections between consecutive elements, expanding bridges
         for i in 0..elements.len() - 1 {
             let (left_endpoint, _left_connectable) = &elements[i];
             let (right_endpoint, right_connectable) = &elements[i + 1];
 
-            // Check if left is a bridge (not first element) - need to use its output
             let left_is_bridge = i > 0 && self.is_bridge_element(left_endpoint);
-            // Check if right is a bridge (not last element) - need to use its input
             let right_is_bridge = (i + 1) < elements.len() - 1 && self.is_bridge_element(right_endpoint);
 
-            // Determine actual endpoints to connect
             let actual_left = if left_is_bridge {
                 self.get_bridge_output_endpoint(left_endpoint, is_forward)
             } else {
@@ -187,12 +183,10 @@ impl<'a> Lowerer<'a> {
                 right_endpoint.clone()
             };
 
-            // Add the connection
             self.design.add_connection(module_id, actual_left, actual_right);
         }
     }
 
-    /// Check if an endpoint represents a bridge element (has can_bridge or can_bridge_by_name trait).
     fn is_bridge_element(&self, endpoint: &ConnectionEndpoint) -> bool {
         if let Some(field_id) = endpoint.resolved {
             if let Some(field) = self.design.get_field(field_id) {
@@ -209,13 +203,11 @@ impl<'a> Lowerer<'a> {
         false
     }
 
-    /// Get the bridge field info (input_field, output_field) for a bridge module.
     fn get_bridge_field_names(&self, endpoint: &ConnectionEndpoint) -> (String, String) {
         if let Some(field_id) = endpoint.resolved {
             if let Some(field) = self.design.get_field(field_id) {
                 if let FieldKind::Instance { resolved_type: Some(type_id), .. } = &field.kind {
                     if let Some(module) = self.design.get_module(*type_id) {
-                        // Look for can_bridge_by_name trait first
                         for trait_ref in &module.traits {
                             if trait_ref.name.name() == "can_bridge_by_name" {
                                 let input = trait_ref.get_string_arg("input_name")
@@ -225,7 +217,6 @@ impl<'a> Lowerer<'a> {
                                 return (input.to_string(), output.to_string());
                             }
                         }
-                        // Fall back to can_bridge which uses unnamed[0] and unnamed[1]
                         for trait_ref in &module.traits {
                             if trait_ref.name.name() == "can_bridge" {
                                 return ("unnamed[0]".to_string(), "unnamed[1]".to_string());
@@ -235,21 +226,16 @@ impl<'a> Lowerer<'a> {
                 }
             }
         }
-        // Default fallback
         ("unnamed[0]".to_string(), "unnamed[1]".to_string())
     }
 
-    /// Get the input endpoint for a bridge element.
     fn get_bridge_input_endpoint(&self, endpoint: &ConnectionEndpoint, _connectable: &Connectable, is_forward: bool) -> ConnectionEndpoint {
         let (input_name, output_name) = self.get_bridge_field_names(endpoint);
         let field_name = if is_forward { &input_name } else { &output_name };
 
-        // Create a new path that appends the bridge field
         if let ato_ir::EndpointKind::FieldRef(base_path) = &endpoint.kind {
             let mut new_path = base_path.clone();
-            // Parse the field name - handle both "unnamed[0]" and simple "input" cases
             if field_name.contains('[') {
-                // Array access like "unnamed[0]"
                 let parts: Vec<&str> = field_name.split('[').collect();
                 let name = parts[0];
                 let index: u32 = parts.get(1)
@@ -261,24 +247,20 @@ impl<'a> Lowerer<'a> {
             }
             ConnectionEndpoint {
                 kind: ato_ir::EndpointKind::FieldRef(new_path),
-                resolved: None, // Will need to be resolved later
+                resolved: None,
             }
         } else {
             endpoint.clone()
         }
     }
 
-    /// Get the output endpoint for a bridge element.
     fn get_bridge_output_endpoint(&self, endpoint: &ConnectionEndpoint, is_forward: bool) -> ConnectionEndpoint {
         let (input_name, output_name) = self.get_bridge_field_names(endpoint);
         let field_name = if is_forward { &output_name } else { &input_name };
 
-        // Create a new path that appends the bridge field
         if let ato_ir::EndpointKind::FieldRef(base_path) = &endpoint.kind {
             let mut new_path = base_path.clone();
-            // Parse the field name - handle both "unnamed[0]" and simple "input" cases
             if field_name.contains('[') {
-                // Array access like "unnamed[1]"
                 let parts: Vec<&str> = field_name.split('[').collect();
                 let name = parts[0];
                 let index: u32 = parts.get(1)
@@ -290,56 +272,45 @@ impl<'a> Lowerer<'a> {
             }
             ConnectionEndpoint {
                 kind: ato_ir::EndpointKind::FieldRef(new_path),
-                resolved: None, // Will need to be resolved later
+                resolved: None,
             }
         } else {
             endpoint.clone()
         }
     }
 
-    /// Lower a connectable element to a connection endpoint.
     fn lower_connectable(&mut self, connectable: &Connectable, module_id: ModuleId, scope: &Scope) -> ConnectionEndpoint {
         match connectable {
             Connectable::FieldRef(field_ref) => {
                 let path = self.lower_field_ref(field_ref);
-
-                // Try to resolve to a field ID
                 let resolved = self.resolve_field_path(&path, scope);
-
                 ConnectionEndpoint {
                     kind: ato_ir::EndpointKind::FieldRef(path),
                     resolved,
                 }
             }
             Connectable::SignalDef(signal) => {
-                // Inline signal definition - create a new signal field
                 let field_id = self.design.add_field(
                     module_id,
                     &signal.name.name,
                     FieldKind::signal(),
                 );
-
                 if let Some(field) = self.design.get_field_mut(field_id) {
                     field.span = Some(signal.span);
                 }
-
                 ConnectionEndpoint::resolved(field_id)
             }
             Connectable::PinDef(pin) => {
-                // Inline pin definition - create a new pin field
                 let (name, kind) = self.pin_to_field_kind(pin);
                 let field_id = self.design.add_field(module_id, &name, kind);
-
                 if let Some(field) = self.design.get_field_mut(field_id) {
                     field.span = Some(pin.span);
                 }
-
                 ConnectionEndpoint::resolved(field_id)
             }
         }
     }
 
-    /// Convert a pin declaration to a name and field kind.
     fn pin_to_field_kind(&self, pin: &PinDeclaration) -> (String, FieldKind) {
         match &pin.name {
             PinName::Identifier(id) => {
@@ -355,32 +326,24 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// Lower a field reference to a field path.
     fn lower_field_ref(&self, field_ref: &FieldRef) -> FieldPath {
         let mut parts = Vec::new();
-
         for part in &field_ref.parts {
             parts.push(FieldPathPart::Name(part.name.name.clone()));
-
             if let Some(index) = &part.index {
                 let n = index.value.parse::<u32>().unwrap_or(0);
                 parts.push(FieldPathPart::Index(n));
             }
         }
-
-        // Handle trailing pin reference (e.g., .1)
         if let Some(pin_ref) = &field_ref.pin_ref {
             let n = pin_ref.value.parse::<u32>().unwrap_or(0);
             parts.push(FieldPathPart::PinRef(n));
         }
-
         FieldPath::new(parts)
     }
 
-    /// Resolve a field path to a field ID.
     fn resolve_field_path(&self, path: &FieldPath, scope: &Scope) -> Option<FieldId> {
         let first_name = path.first_name()?;
-
         match scope.lookup(first_name)? {
             Binding::Field(id) => Some(*id),
             Binding::LoopVariable { source, .. } => Some(*source),
@@ -388,43 +351,55 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// Lower an assert statement to a constraint.
     fn lower_assert(&mut self, assert_stmt: &AssertStmt, module_id: ModuleId, scope: &Scope) {
         let constraint_expr = self.lower_comparison(&assert_stmt.comparison, scope);
         let _constraint_id = self.design.create_constraint(module_id, constraint_expr);
-        // Note: Span is not set as the constraints field is private.
-        // The span could be added to the create_constraint API if needed.
     }
 
-    /// Lower an assignment statement to a constraint (for physical values).
+    /// Lower an assignment statement to a constraint (for physical values)
+    /// or apply template args from `new` expressions.
     fn lower_assignment(&mut self, assign: &Assignment, module_id: ModuleId, _scope: &Scope) {
-        // Only convert physical value assignments to constraints
+        // Handle template arguments from `new` expressions
+        if let Assignable::New(new_expr) = &assign.value {
+            if let Some(template) = &new_expr.template {
+                let instance_path = match &assign.target {
+                    AssignTarget::FieldRef(field_ref) => self.lower_field_ref(field_ref),
+                    AssignTarget::Declaration(decl) => self.lower_field_ref(&decl.field),
+                };
+                for arg in &template.args {
+                    let param_path = instance_path.append(&arg.name.name);
+                    let value_literal = self.lower_literal(&arg.value);
+                    let op_kind = match &arg.value {
+                        Literal::Physical(PhysicalLiteral::Range(_)) => IrCompareOpKind::Within,
+                        Literal::Physical(PhysicalLiteral::Bilateral(_)) => IrCompareOpKind::Within,
+                        _ => IrCompareOpKind::Is,
+                    };
+                    let left = ValueExpr::field(param_path);
+                    let right = ValueExpr::literal(value_literal);
+                    let constraint_expr = ConstraintExpr::compare(left, op_kind, right);
+                    self.design.create_constraint(module_id, constraint_expr);
+                }
+            }
+            return;
+        }
+
         let value_literal = match &assign.value {
             Assignable::Physical(phys) => self.lower_physical_literal(phys),
             Assignable::Arithmetic(expr) => {
-                // Arithmetic expressions can also be converted to constraints
-                // if they contain physical literals
                 if let Expression::Literal(Literal::Physical(phys)) = expr {
                     self.lower_physical_literal(phys)
                 } else {
-                    // Non-physical arithmetic - not a constraint
                     return;
                 }
             }
-            // String, New, Boolean - not constraints
             _ => return,
         };
 
-        // Get the target field path
         let target_path = match &assign.target {
             AssignTarget::FieldRef(field_ref) => self.lower_field_ref(field_ref),
-            AssignTarget::Declaration(decl) => {
-                // Declaration target - use the field reference
-                self.lower_field_ref(&decl.field)
-            }
+            AssignTarget::Declaration(decl) => self.lower_field_ref(&decl.field),
         };
 
-        // Determine the comparison operator based on the value type
         let op_kind = match &assign.value {
             Assignable::Physical(PhysicalLiteral::Quantity(_)) => IrCompareOpKind::Is,
             Assignable::Physical(PhysicalLiteral::Range(_)) => IrCompareOpKind::Within,
@@ -432,18 +407,69 @@ impl<'a> Lowerer<'a> {
             _ => IrCompareOpKind::Is,
         };
 
-        // Create the constraint expression: target IS/WITHIN value
         let left = ValueExpr::field(target_path);
         let right = ValueExpr::literal(value_literal);
         let constraint_expr = ConstraintExpr::compare(left, op_kind, right);
-
         self.design.create_constraint(module_id, constraint_expr);
     }
 
-    /// Lower a comparison to a constraint expression.
+    /// Lower a cumulative assignment (`x += 5` or `x -= 3`).
+    fn lower_cum_assignment(&mut self, cum: &CumAssignment, module_id: ModuleId, scope: &Scope) {
+        let target_path = match &cum.target {
+            AssignTarget::FieldRef(field_ref) => self.lower_field_ref(field_ref),
+            AssignTarget::Declaration(decl) => self.lower_field_ref(&decl.field),
+        };
+        let target_expr = ValueExpr::field(target_path.clone());
+        let value_expr = self.lower_expression(&cum.value, scope);
+        let bin_op = match cum.operator {
+            CumOperator::Add => ato_ir::BinaryOp::Add,
+            CumOperator::Sub => ato_ir::BinaryOp::Sub,
+        };
+        let combined = ValueExpr::binary(target_expr, bin_op, value_expr);
+        let left = ValueExpr::field(target_path);
+        let constraint_expr = ConstraintExpr::compare(left, IrCompareOpKind::Is, combined);
+        self.design.create_constraint(module_id, constraint_expr);
+    }
+
+    /// Lower a set assignment (`x |= mask` or `x &= mask`).
+    fn lower_set_assignment(&mut self, set: &SetAssignment, module_id: ModuleId, scope: &Scope) {
+        let target_path = match &set.target {
+            AssignTarget::FieldRef(field_ref) => self.lower_field_ref(field_ref),
+            AssignTarget::Declaration(decl) => self.lower_field_ref(&decl.field),
+        };
+        let target_expr = ValueExpr::field(target_path.clone());
+        let value_expr = self.lower_expression(&set.value, scope);
+        let bin_op = match set.operator {
+            SetOperator::Or => ato_ir::BinaryOp::BitOr,
+            SetOperator::And => ato_ir::BinaryOp::BitAnd,
+        };
+        let combined = ValueExpr::binary(target_expr, bin_op, value_expr);
+        let left = ValueExpr::field(target_path);
+        let constraint_expr = ConstraintExpr::compare(left, IrCompareOpKind::Is, combined);
+        self.design.create_constraint(module_id, constraint_expr);
+    }
+
+    /// Lower a retype statement (`instance.field -> NewType`).
+    fn lower_retype(&mut self, retype: &Retype, _module_id: ModuleId, scope: &Scope) {
+        let field_path = self.lower_field_ref(&retype.field);
+        if let Some(field_id) = self.resolve_field_path(&field_path, scope) {
+            let type_name = retype.new_type.parts.last()
+                .map(|p| p.name.as_str())
+                .unwrap_or("");
+            if let Some(binding) = scope.lookup(type_name) {
+                if let Some(type_module_id) = binding.as_module() {
+                    if let Some(field) = self.design.get_field_mut(field_id) {
+                        if let FieldKind::Instance { resolved_type, .. } = &mut field.kind {
+                            *resolved_type = Some(type_module_id);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn lower_comparison(&self, comparison: &Comparison, scope: &Scope) -> ConstraintExpr {
         let left = self.lower_expression(&comparison.left, scope);
-
         let operations = comparison.operations
             .iter()
             .map(|op| ato_ir::CompareOp {
@@ -451,11 +477,9 @@ impl<'a> Lowerer<'a> {
                 right: self.lower_expression(&op.right, scope),
             })
             .collect();
-
         ConstraintExpr::new(left, operations)
     }
 
-    /// Lower a comparison operator kind.
     fn lower_compare_op_kind(&self, kind: CompareOpKind) -> IrCompareOpKind {
         match kind {
             CompareOpKind::LessThan => IrCompareOpKind::LessThan,
@@ -467,7 +491,6 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// Lower an expression to a value expression.
     fn lower_expression(&self, expr: &Expression, scope: &Scope) -> ValueExpr {
         match expr {
             Expression::FieldRef(field_ref) => {
@@ -495,60 +518,43 @@ impl<'a> Lowerer<'a> {
                 ValueExpr::Group(Box::new(self.lower_expression(inner, scope)))
             }
             Expression::FunctionCall(_) => {
-                // Function calls in constraints are not yet supported
                 ValueExpr::literal(ValueLiteral::Bool(false))
             }
         }
     }
 
-    /// Lower a literal to a value literal.
     fn lower_literal(&self, lit: &Literal) -> ValueLiteral {
         match lit {
             Literal::Number(num) => {
                 let value = self.parse_number(&num.value);
                 ValueLiteral::Quantity(QuantityValue::dimensionless(value))
             }
-            Literal::String(s) => {
-                ValueLiteral::String(s.value.clone())
-            }
-            Literal::Bool(b) => {
-                ValueLiteral::Bool(b.value)
-            }
-            Literal::Physical(phys) => {
-                self.lower_physical_literal(phys)
-            }
+            Literal::String(s) => ValueLiteral::String(s.value.clone()),
+            Literal::Bool(b) => ValueLiteral::Bool(b.value),
+            Literal::Physical(phys) => self.lower_physical_literal(phys),
         }
     }
 
-    /// Lower a physical literal.
     fn lower_physical_literal(&self, phys: &PhysicalLiteral) -> ValueLiteral {
         match phys {
-            PhysicalLiteral::Quantity(q) => {
-                ValueLiteral::Quantity(self.lower_quantity(q))
-            }
-            PhysicalLiteral::Range(r) => {
-                ValueLiteral::Range {
-                    from: self.lower_quantity(&r.from),
-                    to: self.lower_quantity(&r.to),
-                }
-            }
-            PhysicalLiteral::Bilateral(b) => {
-                ValueLiteral::Bilateral {
-                    base: self.lower_quantity(&b.base),
-                    tolerance: self.lower_tolerance(&b.tolerance),
-                }
-            }
+            PhysicalLiteral::Quantity(q) => ValueLiteral::Quantity(self.lower_quantity(q)),
+            PhysicalLiteral::Range(r) => ValueLiteral::Range {
+                from: self.lower_quantity(&r.from),
+                to: self.lower_quantity(&r.to),
+            },
+            PhysicalLiteral::Bilateral(b) => ValueLiteral::Bilateral {
+                base: self.lower_quantity(&b.base),
+                tolerance: self.lower_tolerance(&b.tolerance),
+            },
         }
     }
 
-    /// Lower a quantity.
     fn lower_quantity(&self, q: &Quantity) -> QuantityValue {
         let value = self.parse_number(&q.number.value);
         let unit = q.unit.as_ref().map(|u| u.name.clone());
         QuantityValue::new(value, unit)
     }
 
-    /// Lower a tolerance.
     fn lower_tolerance(&self, t: &Tolerance) -> ToleranceValue {
         let value = self.parse_tolerance_number(&t.value);
         if t.is_percent {
@@ -559,7 +565,6 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// Lower a binary operator.
     fn lower_binary_op(&self, op: BinaryOp) -> ato_ir::BinaryOp {
         match op {
             BinaryOp::Add => ato_ir::BinaryOp::Add,
@@ -572,9 +577,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// Parse a number string to f64.
     fn parse_number(&self, s: &str) -> f64 {
-        // Handle different number formats
         if s.starts_with("0x") || s.starts_with("0X") {
             i64::from_str_radix(&s[2..], 16).unwrap_or(0) as f64
         } else if s.starts_with("0b") || s.starts_with("0B") {
@@ -586,73 +589,190 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// Parse a tolerance number (may be unsigned).
     fn parse_tolerance_number(&self, s: &str) -> f64 {
         s.parse::<f64>().unwrap_or(0.0)
     }
 
     /// Lower a for statement (expand the loop).
     fn lower_for_statement(&mut self, for_stmt: &ForStmt, module_id: ModuleId, scope: &mut Scope) {
-        // Get the iterable range
-        let iterations = match &for_stmt.iterable {
+        let (iterations, iterable_path) = match &for_stmt.iterable {
             Iterable::FieldRef { field, slice } => {
-                self.get_iteration_range(field, slice.as_ref(), scope)
+                let iterations = self.get_iteration_range(field, slice.as_ref(), scope);
+                let path = self.lower_field_ref(field);
+                (iterations, Some(path))
             }
             Iterable::List(refs) => {
-                // For list iteration, we iterate over each element
-                (0..refs.len() as u32).collect()
+                ((0..refs.len() as u32).collect(), None)
             }
         };
 
-        // Expand the loop body for each iteration
-        for _index in iterations {
-            // Create a child scope with the loop variable bound
+        let loop_var_name = &for_stmt.variable.name;
+
+        for index in iterations {
             let mut iteration_scope = scope.child();
 
-            // The loop variable is bound based on the iterable
-            // For now, we just track the index
-            // In a full implementation, we'd bind to the actual array element
+            match &for_stmt.iterable {
+                Iterable::FieldRef { field, .. } => {
+                    let path = self.lower_field_ref(field);
+                    if let Some(field_id) = self.resolve_field_path(&path, scope) {
+                        iteration_scope.define(
+                            loop_var_name.clone(),
+                            Binding::LoopVariable { source: field_id, index: Some(index) },
+                            None,
+                        );
+                    }
+                }
+                Iterable::List(refs) => {
+                    if let Some(field_ref) = refs.get(index as usize) {
+                        let path = self.lower_field_ref(field_ref);
+                        if let Some(field_id) = self.resolve_field_path(&path, scope) {
+                            iteration_scope.define(
+                                loop_var_name.clone(),
+                                Binding::Field(field_id),
+                                None,
+                            );
+                        }
+                    }
+                }
+            }
 
-            // Lower the body statements
             for stmt in &for_stmt.body {
-                self.lower_block_statement(stmt, module_id, &mut iteration_scope);
+                self.lower_for_body_statement(
+                    stmt, module_id, &mut iteration_scope,
+                    loop_var_name, iterable_path.as_ref(), index,
+                );
             }
         }
     }
 
-    /// Get the iteration range for a for loop.
+    fn lower_for_body_statement(
+        &mut self, stmt: &Statement, module_id: ModuleId, scope: &mut Scope,
+        loop_var: &str, iterable_path: Option<&FieldPath>, index: u32,
+    ) {
+        match stmt {
+            Statement::Connection(conn) => {
+                let left = self.lower_connectable_with_loop_var(&conn.left, module_id, scope, loop_var, iterable_path, index);
+                let right = self.lower_connectable_with_loop_var(&conn.right, module_id, scope, loop_var, iterable_path, index);
+                self.design.add_connection(module_id, left, right);
+            }
+            Statement::Assignment(assign) => {
+                self.lower_assignment_with_loop_var(assign, module_id, scope, loop_var, iterable_path, index);
+            }
+            Statement::Assert(assert_stmt) => {
+                self.lower_assert(assert_stmt, module_id, scope);
+            }
+            _ => {
+                self.lower_block_statement(stmt, module_id, scope);
+            }
+        }
+    }
+
+    fn rewrite_loop_var_path(
+        &self, path: &FieldPath, loop_var: &str,
+        iterable_path: Option<&FieldPath>, index: u32,
+    ) -> FieldPath {
+        if let Some(first_name) = path.first_name() {
+            if first_name == loop_var {
+                if let Some(base) = iterable_path {
+                    let mut new_parts = base.parts.clone();
+                    new_parts.push(FieldPathPart::Index(index));
+                    if path.parts.len() > 1 {
+                        new_parts.extend_from_slice(&path.parts[1..]);
+                    }
+                    return FieldPath::new(new_parts);
+                }
+            }
+        }
+        path.clone()
+    }
+
+    fn lower_connectable_with_loop_var(
+        &mut self, connectable: &Connectable, module_id: ModuleId, scope: &Scope,
+        loop_var: &str, iterable_path: Option<&FieldPath>, index: u32,
+    ) -> ConnectionEndpoint {
+        match connectable {
+            Connectable::FieldRef(field_ref) => {
+                let path = self.lower_field_ref(field_ref);
+                let path = self.rewrite_loop_var_path(&path, loop_var, iterable_path, index);
+                let resolved = self.resolve_field_path(&path, scope);
+                ConnectionEndpoint {
+                    kind: ato_ir::EndpointKind::FieldRef(path),
+                    resolved,
+                }
+            }
+            other => self.lower_connectable(other, module_id, scope),
+        }
+    }
+
+    fn lower_assignment_with_loop_var(
+        &mut self, assign: &Assignment, module_id: ModuleId, scope: &Scope,
+        loop_var: &str, iterable_path: Option<&FieldPath>, index: u32,
+    ) {
+        if let Assignable::New(new_expr) = &assign.value {
+            if let Some(template) = &new_expr.template {
+                let instance_path = match &assign.target {
+                    AssignTarget::FieldRef(field_ref) => self.lower_field_ref(field_ref),
+                    AssignTarget::Declaration(decl) => self.lower_field_ref(&decl.field),
+                };
+                let instance_path = self.rewrite_loop_var_path(&instance_path, loop_var, iterable_path, index);
+                for arg in &template.args {
+                    let param_path = instance_path.append(&arg.name.name);
+                    let value_literal = self.lower_literal(&arg.value);
+                    let op_kind = match &arg.value {
+                        Literal::Physical(PhysicalLiteral::Range(_)) => IrCompareOpKind::Within,
+                        Literal::Physical(PhysicalLiteral::Bilateral(_)) => IrCompareOpKind::Within,
+                        _ => IrCompareOpKind::Is,
+                    };
+                    let left = ValueExpr::field(param_path);
+                    let right = ValueExpr::literal(value_literal);
+                    self.design.create_constraint(module_id, ConstraintExpr::compare(left, op_kind, right));
+                }
+            }
+            return;
+        }
+
+        let value_literal = match &assign.value {
+            Assignable::Physical(phys) => self.lower_physical_literal(phys),
+            Assignable::Arithmetic(expr) => {
+                if let Expression::Literal(Literal::Physical(phys)) = expr {
+                    self.lower_physical_literal(phys)
+                } else { return; }
+            }
+            _ => return,
+        };
+
+        let target_path = match &assign.target {
+            AssignTarget::FieldRef(field_ref) => self.lower_field_ref(field_ref),
+            AssignTarget::Declaration(decl) => self.lower_field_ref(&decl.field),
+        };
+        let target_path = self.rewrite_loop_var_path(&target_path, loop_var, iterable_path, index);
+
+        let op_kind = match &assign.value {
+            Assignable::Physical(PhysicalLiteral::Quantity(_)) => IrCompareOpKind::Is,
+            Assignable::Physical(PhysicalLiteral::Range(_)) => IrCompareOpKind::Within,
+            Assignable::Physical(PhysicalLiteral::Bilateral(_)) => IrCompareOpKind::Within,
+            _ => IrCompareOpKind::Is,
+        };
+
+        let left = ValueExpr::field(target_path);
+        let right = ValueExpr::literal(value_literal);
+        self.design.create_constraint(module_id, ConstraintExpr::compare(left, op_kind, right));
+    }
+
     fn get_iteration_range(&self, field: &FieldRef, slice: Option<&Slice>, scope: &Scope) -> Vec<u32> {
-        // Resolve the field
         let path = self.lower_field_ref(field);
         let field_id = match self.resolve_field_path(&path, scope) {
             Some(id) => id,
             None => return vec![],
         };
-
-        // Get the field's array size
         let count = if let Some(f) = self.design.get_field(field_id) {
-            if let FieldKind::Instance { count: Some(c), .. } = &f.kind {
-                *c
-            } else {
-                1
-            }
-        } else {
-            1
-        };
+            if let FieldKind::Instance { count: Some(c), .. } = &f.kind { *c } else { 1 }
+        } else { 1 };
 
-        // Apply slice if present
         if let Some(s) = slice {
-            let start = s.start.as_ref()
-                .and_then(|n| n.value.parse::<u32>().ok())
-                .unwrap_or(0);
-            let stop = s.stop.as_ref()
-                .and_then(|n| n.value.parse::<u32>().ok())
-                .unwrap_or(count);
-            let step = s.step.as_ref()
-                .and_then(|n| n.value.parse::<u32>().ok())
-                .unwrap_or(1)
-                .max(1);
-
+            let start = s.start.as_ref().and_then(|n| n.value.parse::<u32>().ok()).unwrap_or(0);
+            let stop = s.stop.as_ref().and_then(|n| n.value.parse::<u32>().ok()).unwrap_or(count);
+            let step = s.step.as_ref().and_then(|n| n.value.parse::<u32>().ok()).unwrap_or(1).max(1);
             (start..stop).step_by(step as usize).collect()
         } else {
             (0..count).collect()
@@ -665,32 +785,35 @@ mod tests {
     use super::*;
     use crate::names::NameResolver;
 
+    fn format_field_path(path: &FieldPath) -> String {
+        path.parts
+            .iter()
+            .map(|part| match part {
+                FieldPathPart::Name(n) => n.clone(),
+                FieldPathPart::Index(i) => format!("[{}]", i),
+                FieldPathPart::PinRef(p) => format!(".{}", p),
+            })
+            .collect::<Vec<_>>()
+            .join(".")
+            .replace(".[", "[")
+    }
+
     fn lower(source: &str) -> (Design, Vec<SemaError>) {
         let ast = ato_parser::parse(source).unwrap();
         let mut design = Design::new();
         let mut scope = Scope::new();
-
-        // Name resolution
         let mut name_resolver = NameResolver::new(&mut design);
         let _ = name_resolver.resolve(&ast, &mut scope);
         let mut errors = name_resolver.take_errors();
-
-        // Lowering
         let mut lowerer = Lowerer::new(&mut design);
         let _ = lowerer.lower(&ast, &scope);
         errors.extend(lowerer.take_errors());
-
         (design, errors)
     }
 
     #[test]
     fn test_lower_connection() {
-        let source = r#"
-module M:
-    pin p1
-    pin p2
-    p1 ~ p2
-"#;
+        let source = "module M:\n    pin p1\n    pin p2\n    p1 ~ p2\n";
         let (design, errors) = lower(source);
         assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
         assert_eq!(design.connection_count(), 1);
@@ -698,17 +821,10 @@ module M:
 
     #[test]
     fn test_lower_directed_connection() {
-        let source = r#"
-module M:
-    pin p1
-    pin p2
-    pin p3
-    p1 ~> p2 ~> p3
-"#;
+        let source = "module M:\n    pin p1\n    pin p2\n    pin p3\n    p1 ~> p2 ~> p3\n";
         let (design, errors) = lower(source);
         assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
         assert_eq!(design.connection_count(), 1);
-
         let conn = &design.connections()[0];
         assert!(conn.is_directed());
         assert_eq!(conn.endpoints.len(), 3);
@@ -716,25 +832,15 @@ module M:
 
     #[test]
     fn test_lower_inline_signal() {
-        let source = r#"
-module M:
-    pin p1
-    p1 ~ signal gnd
-"#;
+        let source = "module M:\n    pin p1\n    p1 ~ signal gnd\n";
         let (design, errors) = lower(source);
         assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
-
-        // Should have created an inline signal field
         assert!(design.field_count() >= 2);
     }
 
     #[test]
     fn test_lower_assert() {
-        let source = r#"
-module M:
-    resistance: ohm
-    assert resistance > 0
-"#;
+        let source = "module M:\n    resistance: ohm\n    assert resistance > 0\n";
         let (design, errors) = lower(source);
         assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
         assert_eq!(design.constraint_count(), 1);
@@ -742,11 +848,7 @@ module M:
 
     #[test]
     fn test_lower_assert_within() {
-        let source = r#"
-module M:
-    voltage: V
-    assert voltage within 3V to 3.6V
-"#;
+        let source = "module M:\n    voltage: V\n    assert voltage within 3V to 3.6V\n";
         let (design, errors) = lower(source);
         assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
         assert_eq!(design.constraint_count(), 1);
@@ -754,37 +856,22 @@ module M:
 
     #[test]
     fn test_lower_for_loop() {
-        let source = r#"
-module M:
-    items = new Item[3]
-    signal common
-    for item in items:
-        item ~ common
-"#;
+        let source = "module M:\n    items = new Item[3]\n    signal common\n    for item in items:\n        item ~ common\n";
         let (design, errors) = lower(source);
         assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
-
-        // Should have created 3 connections (one per iteration)
         assert_eq!(design.connection_count(), 3);
     }
 
     #[test]
     fn test_lower_quantity() {
-        let source = r#"
-module M:
-    voltage: V = 3.3V
-"#;
+        let source = "module M:\n    voltage: V = 3.3V\n";
         let (_design, errors) = lower(source);
         assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
     }
 
     #[test]
     fn test_lower_bilateral() {
-        let source = r#"
-module M:
-    resistance: ohm
-    assert resistance within 10kohm +/- 5%
-"#;
+        let source = "module M:\n    resistance: ohm\n    assert resistance within 10kohm +/- 5%\n";
         let (design, errors) = lower(source);
         assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
         assert_eq!(design.constraint_count(), 1);
@@ -792,72 +879,25 @@ module M:
 
     #[test]
     fn test_can_bridge_trait_expansion() {
-        // Test that modules with can_bridge trait are expanded to use unnamed[0] and unnamed[1]
-        let source = r#"
-#pragma experiment("BRIDGE_CONNECT")
-#pragma experiment("TRAITS")
-interface Electrical:
-    pass
-
-module Resistor:
-    unnamed = new Electrical[2]
-    trait can_bridge
-
-module App:
-    signal input
-    signal output
-    r = new Resistor
-    input ~> r ~> output
-"#;
+        let source = "#pragma experiment(\"BRIDGE_CONNECT\")\n#pragma experiment(\"TRAITS\")\ninterface Electrical:\n    pass\n\nmodule Resistor:\n    unnamed = new Electrical[2]\n    trait can_bridge\n\nmodule App:\n    signal input\n    signal output\n    r = new Resistor\n    input ~> r ~> output\n";
         let (design, errors) = lower(source);
         assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
-
-        // Should have 2 connections: input ~ r.unnamed[0] and r.unnamed[1] ~ output
         assert_eq!(design.connection_count(), 2, "Expected 2 connections for bridge expansion");
     }
 
     #[test]
     fn test_can_bridge_by_name_trait_expansion() {
-        // Test that modules with can_bridge_by_name trait use custom field names
-        let source = r#"
-#pragma experiment("BRIDGE_CONNECT")
-#pragma experiment("TRAITS")
-interface Electrical:
-    pass
-
-module Button:
-    in_field = new Electrical
-    out_field = new Electrical
-    trait can_bridge_by_name<input_name="in_field", output_name="out_field">
-
-module App:
-    signal a
-    signal b
-    btn = new Button
-    a ~> btn ~> b
-"#;
+        let source = "#pragma experiment(\"BRIDGE_CONNECT\")\n#pragma experiment(\"TRAITS\")\ninterface Electrical:\n    pass\n\nmodule Button:\n    in_field = new Electrical\n    out_field = new Electrical\n    trait can_bridge_by_name<input_name=\"in_field\", output_name=\"out_field\">\n\nmodule App:\n    signal a\n    signal b\n    btn = new Button\n    a ~> btn ~> b\n";
         let (design, errors) = lower(source);
         assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
-
-        // Should have 2 connections using custom field names
         assert_eq!(design.connection_count(), 2, "Expected 2 connections for bridge expansion");
     }
 
     #[test]
     fn test_directed_connection_without_bridge() {
-        // Test that directed connections without bridges remain as directed connections
-        let source = r#"
-#pragma experiment("BRIDGE_CONNECT")
-module M:
-    pin p1
-    pin p2
-    pin p3
-    p1 ~> p2 ~> p3
-"#;
+        let source = "#pragma experiment(\"BRIDGE_CONNECT\")\nmodule M:\n    pin p1\n    pin p2\n    pin p3\n    p1 ~> p2 ~> p3\n";
         let (design, errors) = lower(source);
         assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
-
-        // Should be 1 directed connection with 3 endpoints
         assert_eq!(design.connection_count(), 1);
         let conn = &design.connections()[0];
         assert!(conn.is_directed());
@@ -866,31 +906,82 @@ module M:
 
     #[test]
     fn test_chained_bridges() {
-        // Test chaining multiple bridges: input ~> r1 ~> r2 ~> output
-        let source = r#"
-#pragma experiment("BRIDGE_CONNECT")
-#pragma experiment("TRAITS")
-interface Electrical:
-    pass
-
-module Resistor:
-    unnamed = new Electrical[2]
-    trait can_bridge
-
-module App:
-    signal input
-    signal output
-    r1 = new Resistor
-    r2 = new Resistor
-    input ~> r1 ~> r2 ~> output
-"#;
+        let source = "#pragma experiment(\"BRIDGE_CONNECT\")\n#pragma experiment(\"TRAITS\")\ninterface Electrical:\n    pass\n\nmodule Resistor:\n    unnamed = new Electrical[2]\n    trait can_bridge\n\nmodule App:\n    signal input\n    signal output\n    r1 = new Resistor\n    r2 = new Resistor\n    input ~> r1 ~> r2 ~> output\n";
         let (design, errors) = lower(source);
         assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
-
-        // Should have 3 connections:
-        // input ~ r1.unnamed[0]
-        // r1.unnamed[1] ~ r2.unnamed[0]
-        // r2.unnamed[1] ~ output
         assert_eq!(design.connection_count(), 3, "Expected 3 connections for chained bridges");
+    }
+
+    #[test]
+    fn test_template_instantiation_creates_constraint() {
+        let source = "#pragma experiment(\"MODULE_TEMPLATING\")\nmodule Resistor:\n    resistance: ohm\n\nmodule App:\n    r1 = new Resistor<resistance=10000>\n";
+        let (design, errors) = lower(source);
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+        assert!(design.constraint_count() > 0, "Template instantiation should create constraint");
+    }
+
+    #[test]
+    fn test_template_instantiation_multiple_args() {
+        let source = "#pragma experiment(\"MODULE_TEMPLATING\")\nmodule Resistor:\n    resistance: ohm\n    max_power: W\n\nmodule App:\n    r1 = new Resistor<resistance=10000, max_power=250>\n";
+        let (design, errors) = lower(source);
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+        assert_eq!(design.constraint_count(), 2, "Two template args should create 2 constraints");
+    }
+
+    #[test]
+    fn test_for_loop_connection_paths_are_indexed() {
+        let source = "module M:\n    items = new Item[3]\n    signal common\n    for item in items:\n        item ~ common\n";
+        let (design, errors) = lower(source);
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+        assert_eq!(design.connection_count(), 3);
+        for (i, conn) in design.connections().iter().enumerate() {
+            let left_path = match &conn.endpoints[0].kind {
+                ato_ir::EndpointKind::FieldRef(path) => format_field_path(path),
+                _ => String::new(),
+            };
+            let expected = format!("items[{}]", i);
+            assert!(left_path.contains(&expected),
+                "Connection {} left path should contain '{}', got '{}'", i, expected, left_path);
+        }
+    }
+
+    #[test]
+    fn test_for_loop_assignment_creates_indexed_constraints() {
+        let source = "module M:\n    caps = new Capacitor[3]\n    for cap in caps:\n        cap.capacitance = 100nF\n";
+        let (design, errors) = lower(source);
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+        assert_eq!(design.constraint_count(), 3, "For loop with 3 iterations should create 3 constraints");
+    }
+
+    #[test]
+    fn test_cum_assignment_add() {
+        let source = "module M:\n    value: ohm\n    value = 10ohm\n    value += 5\n";
+        let (design, errors) = lower(source);
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+        assert_eq!(design.constraint_count(), 2, "Should have constraint from assignment and cum assignment");
+    }
+
+    #[test]
+    fn test_set_assignment_or() {
+        let source = "module M:\n    flags: dimensionless\n    flags = 0\n    flags |= 1\n";
+        let (design, errors) = lower(source);
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+        assert_eq!(design.constraint_count(), 2, "Should have constraint from assignment and set assignment");
+    }
+
+    #[test]
+    fn test_retype_statement() {
+        let source = "module Base:\n    pass\n\nmodule Derived from Base:\n    pass\n\nmodule App:\n    inst = new Base\n    inst -> Derived\n";
+        let (design, errors) = lower(source);
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+        let app = design.modules().iter().find(|m| m.name == "App").unwrap();
+        let inst_id = app.get_field("inst").expect("inst field should exist");
+        let inst_field = design.get_field(inst_id).unwrap();
+        if let FieldKind::Instance { resolved_type, .. } = &inst_field.kind {
+            let derived_id = design.find_module("Derived").unwrap();
+            assert_eq!(*resolved_type, Some(derived_id), "Retype should update resolved type to Derived");
+        } else {
+            panic!("Expected instance field");
+        }
     }
 }
