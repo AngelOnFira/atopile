@@ -464,4 +464,402 @@ mod tests {
         let solver = Solver::new(config);
         assert_eq!(solver.config.timeout, Duration::from_millis(1));
     }
+
+    // --- Integration tests: full solve pipeline ---
+
+    #[test]
+    fn test_parameter_narrowing_subset() {
+        // Simulates: assert resistance within 10kohm +/- 10%
+        // The parameter starts unbounded and should be narrowed to [9000, 11000]
+        let mut solver = Solver::default();
+
+        let param = Parameter::new(Unit::Ohm).with_name("resistance");
+        let param_id = solver.add_parameter(param);
+
+        let param_expr = Expression::parameter(param_id, Unit::Ohm);
+        let param_expr_id = solver.add_expression(param_expr);
+
+        let interval = Expression::literal(Literal::from_interval(9000.0, 11000.0, Unit::Ohm));
+        let interval_id = solver.add_expression(interval);
+
+        solver.constrain(Predicate::is_subset(param_expr_id, interval_id));
+
+        let state = solver.solve().unwrap();
+
+        // Parameter domain should be narrowed
+        let value = state.get_parameter_value(param_id);
+        assert!(value.is_some(), "Parameter should have a narrowed value");
+        if let Some(Literal::Quantity(q)) = value {
+            let min = q.min().unwrap().value();
+            let max = q.max().unwrap().value();
+            assert!((min - 9000.0).abs() < 1.0);
+            assert!((max - 11000.0).abs() < 1.0);
+        } else {
+            panic!("Expected Quantity literal");
+        }
+    }
+
+    #[test]
+    fn test_parameter_narrowing_multiple_subsets() {
+        // Two subset constraints should intersect:
+        // resistance in [3V, 5V] AND resistance in [4V, 6V] -> [4V, 5V]
+        let mut solver = Solver::default();
+
+        let param = Parameter::new(Unit::Volt).with_name("voltage");
+        let param_id = solver.add_parameter(param);
+
+        let param_expr = Expression::parameter(param_id, Unit::Volt);
+        let param_expr_id = solver.add_expression(param_expr);
+
+        let interval1 = Expression::literal(Literal::from_interval(3.0, 5.0, Unit::Volt));
+        let interval1_id = solver.add_expression(interval1);
+        solver.constrain(Predicate::is_subset(param_expr_id, interval1_id));
+
+        let interval2 = Expression::literal(Literal::from_interval(4.0, 6.0, Unit::Volt));
+        let interval2_id = solver.add_expression(interval2);
+        solver.constrain(Predicate::is_subset(param_expr_id, interval2_id));
+
+        let state = solver.solve().unwrap();
+
+        let value = state.get_parameter_value(param_id);
+        assert!(value.is_some());
+        if let Some(Literal::Quantity(q)) = value {
+            let min = q.min().unwrap().value();
+            let max = q.max().unwrap().value();
+            assert!((min - 4.0).abs() < 0.01, "min should be 4.0, got {}", min);
+            assert!((max - 5.0).abs() < 0.01, "max should be 5.0, got {}", max);
+        }
+    }
+
+    #[test]
+    fn test_parameter_narrowing_contradiction() {
+        // Non-overlapping constraints -> contradiction
+        let mut solver = Solver::default();
+
+        let param = Parameter::new(Unit::Volt).with_name("voltage");
+        let param_id = solver.add_parameter(param);
+
+        let param_expr = Expression::parameter(param_id, Unit::Volt);
+        let param_expr_id = solver.add_expression(param_expr);
+
+        let interval1 = Expression::literal(Literal::from_interval(1.0, 2.0, Unit::Volt));
+        let interval1_id = solver.add_expression(interval1);
+        solver.constrain(Predicate::is_subset(param_expr_id, interval1_id));
+
+        let interval2 = Expression::literal(Literal::from_interval(5.0, 6.0, Unit::Volt));
+        let interval2_id = solver.add_expression(interval2);
+        solver.constrain(Predicate::is_subset(param_expr_id, interval2_id));
+
+        let result = solver.solve();
+        assert!(matches!(result, Err(SolverError::Contradiction(_))));
+    }
+
+    #[test]
+    fn test_parameter_narrowing_less_or_equal() {
+        // voltage <= 5V -> domain narrows to (-inf, 5]
+        let mut solver = Solver::default();
+
+        let param = Parameter::new(Unit::Volt).with_name("voltage");
+        let param_id = solver.add_parameter(param);
+
+        let param_expr = Expression::parameter(param_id, Unit::Volt);
+        let param_expr_id = solver.add_expression(param_expr);
+
+        let five_v = Expression::literal(Literal::from_quantity(5.0, Unit::Volt));
+        let five_v_id = solver.add_expression(five_v);
+        solver.constrain(Predicate::less_or_equal(param_expr_id, five_v_id));
+
+        let state = solver.solve().unwrap();
+
+        let value = state.get_parameter_value(param_id);
+        assert!(value.is_some());
+        if let Some(Literal::Quantity(q)) = value {
+            let max = q.max().unwrap().value();
+            assert!((max - 5.0).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn test_parameter_narrowing_greater_or_equal() {
+        // voltage >= 3V (canonicalized to 3V <= voltage) -> domain narrows to [3, +inf)
+        let mut solver = Solver::default();
+
+        let param = Parameter::new(Unit::Volt).with_name("voltage");
+        let param_id = solver.add_parameter(param);
+
+        let param_expr = Expression::parameter(param_id, Unit::Volt);
+        let param_expr_id = solver.add_expression(param_expr);
+
+        let three_v = Expression::literal(Literal::from_quantity(3.0, Unit::Volt));
+        let three_v_id = solver.add_expression(three_v);
+        // >= is canonicalized to <=, so this becomes 3V <= voltage
+        solver.constrain(Predicate::greater_or_equal(param_expr_id, three_v_id));
+
+        let state = solver.solve().unwrap();
+
+        let value = state.get_parameter_value(param_id);
+        assert!(value.is_some());
+        if let Some(Literal::Quantity(q)) = value {
+            let min = q.min().unwrap().value();
+            assert!((min - 3.0).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn test_parameter_narrowing_bounded_range() {
+        // 3V <= voltage AND voltage <= 5V -> [3, 5]
+        let mut solver = Solver::default();
+
+        let param = Parameter::new(Unit::Volt).with_name("voltage");
+        let param_id = solver.add_parameter(param);
+
+        let param_expr1 = Expression::parameter(param_id, Unit::Volt);
+        let param_expr1_id = solver.add_expression(param_expr1);
+
+        let param_expr2 = Expression::parameter(param_id, Unit::Volt);
+        let param_expr2_id = solver.add_expression(param_expr2);
+
+        let three_v = Expression::literal(Literal::from_quantity(3.0, Unit::Volt));
+        let three_v_id = solver.add_expression(three_v);
+        // 3V <= voltage
+        solver.constrain(Predicate::greater_or_equal(param_expr1_id, three_v_id));
+
+        let five_v = Expression::literal(Literal::from_quantity(5.0, Unit::Volt));
+        let five_v_id = solver.add_expression(five_v);
+        // voltage <= 5V
+        solver.constrain(Predicate::less_or_equal(param_expr2_id, five_v_id));
+
+        let state = solver.solve().unwrap();
+
+        let value = state.get_parameter_value(param_id);
+        assert!(value.is_some());
+        if let Some(Literal::Quantity(q)) = value {
+            let min = q.min().unwrap().value();
+            let max = q.max().unwrap().value();
+            assert!((min - 3.0).abs() < 0.01);
+            assert!((max - 5.0).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn test_parameter_narrowing_is() {
+        // voltage is 5V -> narrows to exactly [5, 5]
+        let mut solver = Solver::default();
+
+        let param = Parameter::new(Unit::Volt).with_name("voltage");
+        let param_id = solver.add_parameter(param);
+
+        let param_expr = Expression::parameter(param_id, Unit::Volt);
+        let param_expr_id = solver.add_expression(param_expr);
+
+        let five_v = Expression::literal(Literal::from_quantity(5.0, Unit::Volt));
+        let five_v_id = solver.add_expression(five_v);
+        solver.constrain(Predicate::is(param_expr_id, five_v_id));
+
+        let state = solver.solve().unwrap();
+
+        let value = state.get_parameter_value(param_id);
+        assert!(value.is_some());
+        if let Some(Literal::Quantity(q)) = value {
+            assert!(q.is_singleton());
+            let val = q.min().unwrap().value();
+            assert!((val - 5.0).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn test_within_becomes_subset() {
+        // assert resistance within 10kohm +/- 10%
+        // `within` is canonicalized to `IsSubset`
+        let mut solver = Solver::default();
+
+        let param = Parameter::new(Unit::Ohm).with_name("resistance");
+        let param_id = solver.add_parameter(param);
+
+        let param_expr = Expression::parameter(param_id, Unit::Ohm);
+        let param_expr_id = solver.add_expression(param_expr);
+
+        // 10kohm +/- 10% = [9000, 11000]
+        let tol_expr = Expression::literal(Literal::from_interval(9000.0, 11000.0, Unit::Ohm));
+        let tol_expr_id = solver.add_expression(tol_expr);
+
+        // Use `within` which canonicalizes to IsSubset
+        solver.constrain(Predicate::within(param_expr_id, tol_expr_id));
+
+        let state = solver.solve().unwrap();
+
+        let value = state.get_parameter_value(param_id);
+        assert!(value.is_some());
+        if let Some(Literal::Quantity(q)) = value {
+            let min = q.min().unwrap().value();
+            let max = q.max().unwrap().value();
+            assert!((min - 9000.0).abs() < 1.0);
+            assert!((max - 11000.0).abs() < 1.0);
+        }
+    }
+
+    #[test]
+    fn test_constant_fold_quantity_multiply() {
+        // 5V * 2A = 10W
+        let mut solver = Solver::default();
+
+        let five_v = solver.add_expression(Expression::literal(Literal::from_quantity(
+            5.0,
+            Unit::Volt,
+        )));
+        let two_a = solver.add_expression(Expression::literal(Literal::from_quantity(
+            2.0,
+            Unit::Ampere,
+        )));
+
+        let product = solver.add_expression(Expression::multiply(five_v, two_a, Some(Unit::Watt)));
+        let expected = solver.add_expression(Expression::literal(Literal::from_quantity(
+            10.0,
+            Unit::Watt,
+        )));
+        solver.constrain(Predicate::is(product, expected));
+
+        let state = solver.solve().unwrap();
+        assert!(state.all_satisfied);
+    }
+
+    #[test]
+    fn test_constant_fold_quantity_divide() {
+        // 10V / 2A = 5ohm
+        let mut solver = Solver::default();
+
+        let ten_v = solver.add_expression(Expression::literal(Literal::from_quantity(
+            10.0,
+            Unit::Volt,
+        )));
+        let two_a = solver.add_expression(Expression::literal(Literal::from_quantity(
+            2.0,
+            Unit::Ampere,
+        )));
+
+        let quotient = solver.add_expression(Expression::divide(ten_v, two_a, Some(Unit::Ohm)));
+        let expected = solver.add_expression(Expression::literal(Literal::from_quantity(
+            5.0,
+            Unit::Ohm,
+        )));
+        solver.constrain(Predicate::is(quotient, expected));
+
+        let state = solver.solve().unwrap();
+        assert!(state.all_satisfied);
+    }
+
+    #[test]
+    fn test_get_parameter_value_pre_solve() {
+        // Before solving, an unbounded parameter should return None
+        let mut solver = Solver::default();
+
+        let param = Parameter::new(Unit::Ohm).with_name("R1");
+        let param_id = solver.add_parameter(param);
+
+        assert!(solver.get_parameter_value(param_id).is_none());
+    }
+
+    #[test]
+    fn test_literal_subset_evaluation() {
+        // [9000, 11000] is subset of [8000, 12000] -> true
+        let mut solver = Solver::default();
+
+        let inner =
+            solver.add_expression(Expression::literal(Literal::from_interval(
+                9000.0, 11000.0, Unit::Ohm,
+            )));
+        let outer =
+            solver.add_expression(Expression::literal(Literal::from_interval(
+                8000.0, 12000.0, Unit::Ohm,
+            )));
+        solver.constrain(Predicate::is_subset(inner, outer));
+
+        let state = solver.solve().unwrap();
+        assert!(state.all_satisfied);
+    }
+
+    #[test]
+    fn test_literal_subset_contradiction() {
+        // [1, 10] is subset of [5, 7] -> false (1 < 5)
+        let mut solver = Solver::default();
+
+        let wide =
+            solver.add_expression(Expression::literal(Literal::from_interval(
+                1.0, 10.0, Unit::Volt,
+            )));
+        let narrow =
+            solver.add_expression(Expression::literal(Literal::from_interval(
+                5.0, 7.0, Unit::Volt,
+            )));
+        solver.constrain(Predicate::is_subset(wide, narrow));
+
+        let result = solver.solve();
+        assert!(matches!(result, Err(SolverError::Contradiction(_))));
+    }
+
+    #[test]
+    fn test_multiple_parameters_independent() {
+        // Two independent parameters with separate constraints
+        let mut solver = Solver::default();
+
+        // resistance in [9k, 11k]
+        let r_param = Parameter::new(Unit::Ohm).with_name("resistance");
+        let r_id = solver.add_parameter(r_param);
+        let r_expr = Expression::parameter(r_id, Unit::Ohm);
+        let r_expr_id = solver.add_expression(r_expr);
+        let r_interval = Expression::literal(Literal::from_interval(9000.0, 11000.0, Unit::Ohm));
+        let r_interval_id = solver.add_expression(r_interval);
+        solver.constrain(Predicate::is_subset(r_expr_id, r_interval_id));
+
+        // voltage in [3.0, 3.6]
+        let v_param = Parameter::new(Unit::Volt).with_name("voltage");
+        let v_id = solver.add_parameter(v_param);
+        let v_expr = Expression::parameter(v_id, Unit::Volt);
+        let v_expr_id = solver.add_expression(v_expr);
+        let v_interval = Expression::literal(Literal::from_interval(3.0, 3.6, Unit::Volt));
+        let v_interval_id = solver.add_expression(v_interval);
+        solver.constrain(Predicate::is_subset(v_expr_id, v_interval_id));
+
+        let state = solver.solve().unwrap();
+
+        let r_val = state.get_parameter_value(r_id);
+        assert!(r_val.is_some());
+        if let Some(Literal::Quantity(q)) = r_val {
+            assert!((q.min().unwrap().value() - 9000.0).abs() < 1.0);
+            assert!((q.max().unwrap().value() - 11000.0).abs() < 1.0);
+        }
+
+        let v_val = state.get_parameter_value(v_id);
+        assert!(v_val.is_some());
+        if let Some(Literal::Quantity(q)) = v_val {
+            assert!((q.min().unwrap().value() - 3.0).abs() < 0.01);
+            assert!((q.max().unwrap().value() - 3.6).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn test_less_than_narrowing() {
+        // voltage < 5V -> domain narrows to (-inf, 5]
+        let mut solver = Solver::default();
+
+        let param = Parameter::new(Unit::Volt).with_name("voltage");
+        let param_id = solver.add_parameter(param);
+
+        let param_expr = Expression::parameter(param_id, Unit::Volt);
+        let param_expr_id = solver.add_expression(param_expr);
+
+        let five_v = Expression::literal(Literal::from_quantity(5.0, Unit::Volt));
+        let five_v_id = solver.add_expression(five_v);
+        // voltage < 5V (canonicalized from GreaterThan: 5V > voltage becomes voltage < 5V)
+        solver.constrain(Predicate::less_than(param_expr_id, five_v_id));
+
+        let state = solver.solve().unwrap();
+
+        let value = state.get_parameter_value(param_id);
+        assert!(value.is_some());
+        if let Some(Literal::Quantity(q)) = value {
+            let max = q.max().unwrap().value();
+            assert!((max - 5.0).abs() < 0.01);
+        }
+    }
 }

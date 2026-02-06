@@ -7,7 +7,8 @@
 //! - Narrowing parameter domains from constraints
 
 use super::{
-    ContradictionInfo, SimplificationContext, SimplificationPass, SimplificationResult,
+    replace_expr_in_predicate, ContradictionInfo, SimplificationContext, SimplificationPass,
+    SimplificationResult,
 };
 use crate::expression::{Expression, ExpressionId, ExpressionKind, Literal, ParameterId};
 use crate::predicate::{Predicate, PredicateId, PredicateKind};
@@ -229,11 +230,14 @@ fn make_lower_bound(min_val: f64, unit: Unit) -> Literal {
 ///
 /// For each constrained predicate involving a parameter on one side and a literal on the other,
 /// narrow the parameter's domain by intersecting with the constraint.
+/// After narrowing, predicates that were used for narrowing are marked as terminated
+/// since the constraint has been absorbed into the parameter's domain.
 fn narrow_parameter_domains(ctx: &mut SimplificationContext) -> SimplificationResult {
     let mut result = SimplificationResult::new();
 
-    // Collect narrowing operations: param_id -> new domain constraints
+    // Collect narrowing operations: param_id -> (constraint intervals, predicate ids that contributed)
     let mut narrowings: HashMap<ParameterId, Vec<QuantityIntervalDisjoint>> = HashMap::new();
+    let mut narrowing_preds: HashMap<ParameterId, Vec<PredicateId>> = HashMap::new();
 
     let pred_ids: Vec<_> = ctx.predicates.keys().copied().collect();
     for pred_id in &pred_ids {
@@ -251,6 +255,7 @@ fn narrow_parameter_domains(ctx: &mut SimplificationContext) -> SimplificationRe
                 if let Some(param_id) = expr_as_param(ctx, *left) {
                     if let Some(interval) = expr_as_quantity(ctx, *right) {
                         narrowings.entry(param_id).or_default().push(interval);
+                        narrowing_preds.entry(param_id).or_default().push(*pred_id);
                     }
                 }
             }
@@ -259,11 +264,13 @@ fn narrow_parameter_domains(ctx: &mut SimplificationContext) -> SimplificationRe
                 if let Some(param_id) = expr_as_param(ctx, *left) {
                     if let Some(interval) = expr_as_quantity(ctx, *right) {
                         narrowings.entry(param_id).or_default().push(interval);
+                        narrowing_preds.entry(param_id).or_default().push(*pred_id);
                     }
                 }
                 if let Some(param_id) = expr_as_param(ctx, *right) {
                     if let Some(interval) = expr_as_quantity(ctx, *left) {
                         narrowings.entry(param_id).or_default().push(interval);
+                        narrowing_preds.entry(param_id).or_default().push(*pred_id);
                     }
                 }
             }
@@ -276,6 +283,7 @@ fn narrow_parameter_domains(ctx: &mut SimplificationContext) -> SimplificationRe
                             let bound = make_upper_bound(max_q.value(), interval.unit());
                             if let Literal::Quantity(q) = bound {
                                 narrowings.entry(param_id).or_default().push(q);
+                                narrowing_preds.entry(param_id).or_default().push(*pred_id);
                             }
                         }
                     }
@@ -287,6 +295,7 @@ fn narrow_parameter_domains(ctx: &mut SimplificationContext) -> SimplificationRe
                             let bound = make_lower_bound(min_q.value(), interval.unit());
                             if let Literal::Quantity(q) = bound {
                                 narrowings.entry(param_id).or_default().push(q);
+                                narrowing_preds.entry(param_id).or_default().push(*pred_id);
                             }
                         }
                     }
@@ -301,6 +310,7 @@ fn narrow_parameter_domains(ctx: &mut SimplificationContext) -> SimplificationRe
                             let bound = make_upper_bound(min_q.value(), interval.unit());
                             if let Literal::Quantity(q) = bound {
                                 narrowings.entry(param_id).or_default().push(q);
+                                narrowing_preds.entry(param_id).or_default().push(*pred_id);
                             }
                         }
                     }
@@ -312,6 +322,7 @@ fn narrow_parameter_domains(ctx: &mut SimplificationContext) -> SimplificationRe
                             let bound = make_lower_bound(max_q.value(), interval.unit());
                             if let Literal::Quantity(q) = bound {
                                 narrowings.entry(param_id).or_default().push(q);
+                                narrowing_preds.entry(param_id).or_default().push(*pred_id);
                             }
                         }
                     }
@@ -387,39 +398,19 @@ fn narrow_parameter_domains(ctx: &mut SimplificationContext) -> SimplificationRe
                 result.replace_expression(expr_id, new_id);
             }
         }
+
+        // Terminate predicates that were absorbed into the parameter's domain
+        if let Some(preds) = narrowing_preds.get(&param_id) {
+            for pred_id in preds {
+                if let Some(p) = ctx.predicates.get_mut(pred_id) {
+                    p.solver_terminated = true;
+                }
+                result.terminate_predicate(*pred_id);
+            }
+        }
     }
 
     result
-}
-
-/// Replace references to old_id with new_id in a predicate.
-fn replace_expr_in_predicate(pred: &mut Predicate, old_id: ExpressionId, new_id: ExpressionId) {
-    match &mut pred.kind {
-        PredicateKind::Is { left, right }
-        | PredicateKind::LessOrEqual { left, right }
-        | PredicateKind::LessThan { left, right }
-        | PredicateKind::NotEqual { left, right }
-        | PredicateKind::IsSubset { left, right }
-        | PredicateKind::IsSuperset { left, right }
-        | PredicateKind::GreaterOrEqual { left, right }
-        | PredicateKind::GreaterThan { left, right } => {
-            if *left == old_id {
-                *left = new_id;
-            }
-            if *right == old_id {
-                *right = new_id;
-            }
-        }
-        PredicateKind::Within { value, tolerance } => {
-            if *value == old_id {
-                *value = new_id;
-            }
-            if *tolerance == old_id {
-                *tolerance = new_id;
-            }
-        }
-        _ => {}
-    }
 }
 
 /// Merge intersecting subset constraints.

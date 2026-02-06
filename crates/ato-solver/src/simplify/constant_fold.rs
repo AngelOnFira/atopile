@@ -3,7 +3,8 @@
 //! This pass evaluates expressions with literal operands.
 
 use super::{
-    ContradictionInfo, SimplificationContext, SimplificationPass, SimplificationResult,
+    replace_expr_in_predicate, ContradictionInfo, SimplificationContext, SimplificationPass,
+    SimplificationResult,
 };
 use crate::expression::{ArithmeticOp, Expression, ExpressionId, ExpressionKind, Literal};
 use crate::predicate::{Predicate, PredicateKind};
@@ -34,6 +35,17 @@ impl SimplificationPass for ConstantFoldPass {
                     let new_expr = Expression::literal(folded);
                     let new_id = new_expr.id;
                     ctx.expressions.add_expression(new_expr);
+
+                    // Update all predicates that reference the old expression
+                    let pred_ids: Vec<_> = ctx.predicates.keys().copied().collect();
+                    for pid in pred_ids {
+                        if let Some(pred) = ctx.predicates.get_mut(&pid) {
+                            replace_expr_in_predicate(pred, expr_id, new_id);
+                        }
+                    }
+
+                    // Remove the old arithmetic expression so it isn't re-folded
+                    ctx.expressions.remove_expression(expr_id);
                     result.replace_expression(expr_id, new_id);
                 }
             }

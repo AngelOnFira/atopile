@@ -12,7 +12,7 @@ pub use constant_fold::ConstantFoldPass;
 pub use structural::StructuralPass;
 
 use crate::expression::{Expression, ExpressionId, ExpressionStore, Literal};
-use crate::predicate::{Predicate, PredicateId};
+use crate::predicate::{Predicate, PredicateId, PredicateKind};
 use std::collections::HashMap;
 
 /// The result of a simplification pass.
@@ -205,6 +205,40 @@ pub trait SimplificationPass {
 #[allow(dead_code)]
 pub fn try_evaluate_literal(expr: &Expression) -> Option<Literal> {
     expr.as_literal().cloned()
+}
+
+/// Replace references to old_id with new_id in a predicate.
+pub fn replace_expr_in_predicate(
+    pred: &mut Predicate,
+    old_id: ExpressionId,
+    new_id: ExpressionId,
+) {
+    match &mut pred.kind {
+        PredicateKind::Is { left, right }
+        | PredicateKind::LessOrEqual { left, right }
+        | PredicateKind::LessThan { left, right }
+        | PredicateKind::NotEqual { left, right }
+        | PredicateKind::IsSubset { left, right }
+        | PredicateKind::IsSuperset { left, right }
+        | PredicateKind::GreaterOrEqual { left, right }
+        | PredicateKind::GreaterThan { left, right } => {
+            if *left == old_id {
+                *left = new_id;
+            }
+            if *right == old_id {
+                *right = new_id;
+            }
+        }
+        PredicateKind::Within { value, tolerance } => {
+            if *value == old_id {
+                *value = new_id;
+            }
+            if *tolerance == old_id {
+                *tolerance = new_id;
+            }
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]

@@ -25,7 +25,8 @@ mod simplify;
 mod solver;
 
 pub use expression::{
-    ArithmeticOp, Expression, ExpressionId, ExpressionKind, Literal, Parameter, ParameterId,
+    ArithmeticOp, Expression, ExpressionId, ExpressionKind, ExpressionStore, Literal, Parameter,
+    ParameterId,
 };
 pub use predicate::{Predicate, PredicateId, PredicateKind};
 pub use simplify::{SimplificationPass, SimplificationResult};
