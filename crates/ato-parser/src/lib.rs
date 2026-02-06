@@ -602,6 +602,89 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_assert_multiply() {
+        let source = "module M:\n    assert x >= y * 1.5\n";
+        let file = parse(source).unwrap();
+        if let Statement::BlockDef(block) = &file.statements[0] {
+            assert!(matches!(block.body[0], Statement::Assert(_)));
+        } else {
+            panic!("Expected block");
+        }
+    }
+
+    #[test]
+    fn test_parse_assign_multiply() {
+        // Basic: x = a * b
+        let source = "module M:\n    x = 300 * y\n";
+        let file = parse(source).unwrap();
+        if let Statement::BlockDef(block) = &file.statements[0] {
+            if let Statement::Assignment(assign) = &block.body[0] {
+                assert!(matches!(assign.value, Assignable::Arithmetic(_)));
+            } else {
+                panic!("Expected assignment");
+            }
+        } else {
+            panic!("Expected block");
+        }
+    }
+
+    #[test]
+    fn test_parse_assign_chained_multiply() {
+        // k_iset = 300 * k_i * k_r (from BQ25185)
+        let source = "module M:\n    k_iset = 300 * k_i * k_r\n";
+        let file = parse(source).unwrap();
+        if let Statement::BlockDef(block) = &file.statements[0] {
+            if let Statement::Assignment(assign) = &block.body[0] {
+                assert!(matches!(assign.value, Assignable::Arithmetic(_)));
+            } else {
+                panic!("Expected assignment");
+            }
+        } else {
+            panic!("Expected block");
+        }
+    }
+
+    #[test]
+    fn test_parse_assert_multiply_rhs() {
+        // assert x >= y * 1.5 (from BQ25185)
+        let source = "module M:\n    assert x >= y * 1.5\n";
+        let file = parse(source).unwrap();
+        if let Statement::BlockDef(block) = &file.statements[0] {
+            assert!(matches!(block.body[0], Statement::Assert(_)));
+        } else {
+            panic!("Expected block");
+        }
+    }
+
+    #[test]
+    fn test_physical_literal_still_assignable() {
+        // Plain physical literals should still be Assignable::Physical
+        let source = "module M:\n    x = 10kohm +/- 10%\n";
+        let file = parse(source).unwrap();
+        if let Statement::BlockDef(block) = &file.statements[0] {
+            if let Statement::Assignment(assign) = &block.body[0] {
+                assert!(matches!(assign.value, Assignable::Physical(PhysicalLiteral::Bilateral(_))));
+            } else {
+                panic!("Expected assignment");
+            }
+        } else {
+            panic!("Expected block");
+        }
+    }
+
+    #[test]
+    fn test_parse_from_py_import() {
+        // BQ25185 has: from "ResistanceMapper.py" import ResistanceMapper
+        // This should parse (even though .py files won't be loaded)
+        let source = r#"from "ResistanceMapper.py" import ResistanceMapper
+module M:
+    pass
+"#;
+        let file = parse(source).unwrap();
+        assert!(!file.statements.is_empty());
+    }
+
+    #[test]
     fn test_error_recovery() {
         // This has an error (missing colon after module name)
         let source = "module Bad\n    pass\n";

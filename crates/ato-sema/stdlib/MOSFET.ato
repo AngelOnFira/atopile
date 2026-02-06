@@ -23,3 +23,9 @@ module MOSFET:
     # Traits
     trait can_bridge_by_name<input_name="drain", output_name="source">
     trait has_designator_prefix::prefix<value="Q">
+
+module NFET from MOSFET:
+    pass
+
+module PFET from MOSFET:
+    pass

@@ -29,6 +29,7 @@ pub fn embedded_stdlib_files() -> Vec<(&'static str, &'static str)> {
         ("OpAmp.ato", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/stdlib/OpAmp.ato"))),
         ("PDM.ato", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/stdlib/PDM.ato"))),
         ("Power.ato", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/stdlib/Power.ato"))),
+        ("PoweredLED.ato", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/stdlib/PoweredLED.ato"))),
         ("Regulator.ato", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/stdlib/Regulator.ato"))),
         ("Relay.ato", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/stdlib/Relay.ato"))),
         ("Resistor.ato", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/stdlib/Resistor.ato"))),

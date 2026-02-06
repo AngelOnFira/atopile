@@ -1,0 +1,21 @@
+# PoweredLED module - LED with current-limiting resistor
+# Standard library module for powered LED indicators
+
+import LED
+import Resistor
+import ElectricPower
+import can_bridge_by_name
+
+module PoweredLED:
+    power = new ElectricPower
+    current_limiting_resistor = new Resistor
+    led = new LED
+
+    # Bridge: power.hv -> led -> resistor -> power.lv
+    power.hv ~> led ~> current_limiting_resistor ~> power.lv
+
+    # I = (V - V_led) / R
+    assert (power.voltage - led.forward_voltage) / led.current is current_limiting_resistor.resistance
+    assert led.forward_voltage <= power.voltage
+
+    trait can_bridge_by_name<input_name="power.hv", output_name="power.lv">

@@ -266,6 +266,13 @@ impl Analyzer {
         scope: &mut Scope,
         span: Option<ato_lexer::Span>,
     ) {
+        // Skip non-ato file imports (e.g., Python files like ResistanceMapper.py)
+        if let Some(path) = from_path {
+            if path.ends_with(".py") {
+                return;
+            }
+        }
+
         // Try to resolve the import
         let resolved_path = if let Some(path) = from_path {
             // `from "path" import Name` - resolve the path
@@ -578,40 +585,56 @@ impl Analyzer {
                                 design.add_field(module_id, &name, kind);
                             }
                             Statement::Assignment(assign) => {
-                                // Handle field assignments like `p1 = new Electrical`
+                                // Handle field assignments
                                 if let ato_parser::AssignTarget::FieldRef(field_ref) = &assign.target {
                                     if field_ref.parts.len() == 1 {
                                         let name = field_ref.parts[0].name.name.clone();
-                                        if let ato_parser::Assignable::New(new_expr) = &assign.value {
-                                            let type_name = new_expr.type_ref.parts
-                                                .iter()
-                                                .map(|p| p.name.clone())
-                                                .collect::<Vec<_>>();
-                                            let qname = ato_ir::QualifiedName::new(type_name.clone());
-                                            let count = new_expr.count.as_ref()
-                                                .and_then(|c| c.value.parse().ok());
+                                        match &assign.value {
+                                            ato_parser::Assignable::New(new_expr) => {
+                                                let type_name = new_expr.type_ref.parts
+                                                    .iter()
+                                                    .map(|p| p.name.clone())
+                                                    .collect::<Vec<_>>();
+                                                let qname = ato_ir::QualifiedName::new(type_name.clone());
+                                                let count = new_expr.count.as_ref()
+                                                    .and_then(|c| c.value.parse().ok());
 
-                                            // Try to resolve the type from scope
-                                            let resolved_type = type_name.last()
-                                                .and_then(|n| scope.lookup(n))
-                                                .and_then(|b| b.as_module());
+                                                // Try to resolve the type from scope
+                                                let resolved_type = type_name.last()
+                                                    .and_then(|n| scope.lookup(n))
+                                                    .and_then(|b| b.as_module());
 
-                                            let kind = if let Some(count) = count {
-                                                ato_ir::FieldKind::Instance {
-                                                    type_ref: qname,
-                                                    count: Some(count),
-                                                    resolved_type,
-                                                }
-                                            } else {
-                                                ato_ir::FieldKind::Instance {
-                                                    type_ref: qname,
-                                                    count: None,
-                                                    resolved_type,
-                                                }
-                                            };
-                                            design.add_field(module_id, &name, kind);
+                                                let kind = if let Some(count) = count {
+                                                    ato_ir::FieldKind::Instance {
+                                                        type_ref: qname,
+                                                        count: Some(count),
+                                                        resolved_type,
+                                                    }
+                                                } else {
+                                                    ato_ir::FieldKind::Instance {
+                                                        type_ref: qname,
+                                                        count: None,
+                                                        resolved_type,
+                                                    }
+                                                };
+                                                design.add_field(module_id, &name, kind);
+                                            }
+                                            ato_parser::Assignable::Physical(_)
+                                            | ato_parser::Assignable::Arithmetic(_)
+                                            | ato_parser::Assignable::String(_)
+                                            | ato_parser::Assignable::Boolean(_) => {
+                                                // Value assignment creates a parameter field
+                                                design.add_field(module_id, &name, ato_ir::FieldKind::parameter());
+                                            }
                                         }
                                     }
+                                } else if let ato_parser::AssignTarget::Declaration(decl) = &assign.target {
+                                    // Declaration with assignment: `field: type = value`
+                                    let name = decl.field.parts.first()
+                                        .map(|p| p.name.name.clone())
+                                        .unwrap_or_default();
+                                    let kind = ato_ir::FieldKind::parameter_with_unit(&decl.type_info.name);
+                                    design.add_field(module_id, &name, kind);
                                 }
                             }
                             Statement::Connection(conn) => {

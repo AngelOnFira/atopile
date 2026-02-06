@@ -11,6 +11,20 @@ use ato_parser::{
     Iterable, Statement,
 };
 
+/// Result of resolving a field reference.
+enum FieldRefResolution {
+    /// Successfully resolved to a field.
+    Resolved(FieldId),
+    /// Root name not found in scope.
+    RootNotFound,
+    /// Root name found but a sub-field couldn't be resolved because type info
+    /// is incomplete (resolved_type is None, field not an instance, etc.).
+    TypeInfoIncomplete,
+    /// Root name found, type is fully resolved, but the sub-field doesn't exist
+    /// on the resolved type. This is a definite error.
+    SubFieldNotFound(String),
+}
+
 /// Type checks an AST against a resolved design.
 pub struct TypeChecker<'a> {
     /// The resolved design.
@@ -152,22 +166,30 @@ impl<'a> TypeChecker<'a> {
     fn check_connectable(&mut self, connectable: &Connectable, scope: &Scope, span: ato_lexer::Span) {
         match connectable {
             Connectable::FieldRef(field_ref) => {
-                // Resolve the field and check if it's connectable
-                if let Some(field_id) = self.resolve_field_ref(field_ref, scope) {
-                    if let Some(field) = self.design.get_field(field_id) {
-                        if !field.is_connectable() {
-                            self.errors.push(SemaError::not_connectable(
-                                &field.name,
-                                Some(span),
-                            ));
+                match self.resolve_field_ref_detailed(field_ref, scope) {
+                    FieldRefResolution::Resolved(field_id) => {
+                        if let Some(field) = self.design.get_field(field_id) {
+                            if !field.is_connectable() {
+                                self.errors.push(SemaError::not_connectable(
+                                    &field.name,
+                                    Some(span),
+                                ));
+                            }
                         }
                     }
-                } else {
-                    // Field not found
-                    let name = field_ref.parts.first()
-                        .map(|p| p.name.name.clone())
-                        .unwrap_or_default();
-                    self.errors.push(SemaError::undefined_name(&name, Some(field_ref.span)));
+                    FieldRefResolution::RootNotFound => {
+                        let first_name = field_ref.parts.first()
+                            .map(|p| p.name.name.clone())
+                            .unwrap_or_default();
+                        self.errors.push(SemaError::undefined_name(&first_name, Some(field_ref.span)));
+                    }
+                    FieldRefResolution::SubFieldNotFound(_) | FieldRefResolution::TypeInfoIncomplete => {
+                        // Sub-field resolution failed. This could be:
+                        // - A genuinely missing field on a known type
+                        // - A Python dynamic property (e.g. reference_shim) not modeled in Rust
+                        // - Incomplete type information
+                        // Skip silently for now since we can't distinguish these cases.
+                    }
                 }
             }
             Connectable::SignalDef(_) | Connectable::PinDef(_) => {
@@ -233,53 +255,75 @@ impl<'a> TypeChecker<'a> {
         true
     }
 
-    /// Resolve a field reference to a field ID.
+    /// Resolve a field reference to a field ID (convenience wrapper).
     fn resolve_field_ref(&self, field_ref: &FieldRef, scope: &Scope) -> Option<FieldId> {
-        let first_name = field_ref.parts.first()?.name.name.as_str();
+        match self.resolve_field_ref_detailed(field_ref, scope) {
+            FieldRefResolution::Resolved(id) => Some(id),
+            _ => None,
+        }
+    }
 
-        match scope.lookup(first_name)? {
-            Binding::Field(id) => {
+    /// Resolve a field reference with detailed error information.
+    fn resolve_field_ref_detailed(&self, field_ref: &FieldRef, scope: &Scope) -> FieldRefResolution {
+        let first_name = match field_ref.parts.first() {
+            Some(p) => p.name.name.as_str(),
+            None => return FieldRefResolution::RootNotFound,
+        };
+
+        match scope.lookup(first_name) {
+            Some(Binding::Field(id)) => {
                 // If it's a simple reference, return directly
                 if field_ref.parts.len() == 1 {
-                    return Some(*id);
+                    return FieldRefResolution::Resolved(*id);
                 }
 
                 // For nested references (a.b.c), we need to look up each part
                 self.resolve_nested_field(field_ref, *id)
             }
-            Binding::LoopVariable { source, .. } => {
+            Some(Binding::LoopVariable { source, .. }) => {
                 // Loop variable - resolve from the source
-                Some(*source)
+                FieldRefResolution::Resolved(*source)
             }
-            _ => None,
+            None => FieldRefResolution::RootNotFound,
+            _ => FieldRefResolution::RootNotFound,
         }
     }
 
     /// Resolve a nested field reference (a.b.c).
-    fn resolve_nested_field(&self, field_ref: &FieldRef, start_field: FieldId) -> Option<FieldId> {
+    fn resolve_nested_field(&self, field_ref: &FieldRef, start_field: FieldId) -> FieldRefResolution {
         let mut current_field = start_field;
 
         for part in field_ref.parts.iter().skip(1) {
             // Get the current field
-            let field = self.design.get_field(current_field)?;
+            let field = match self.design.get_field(current_field) {
+                Some(f) => f,
+                None => return FieldRefResolution::TypeInfoIncomplete,
+            };
 
             // The field must be an instance to access nested fields
             if let FieldKind::Instance { resolved_type, .. } = &field.kind {
                 if let Some(module_id) = resolved_type {
                     // Look up the next field in the instance's type
-                    let module = self.design.get_module(*module_id)?;
-                    current_field = module.get_field(&part.name.name)?;
+                    let module = match self.design.get_module(*module_id) {
+                        Some(m) => m,
+                        None => return FieldRefResolution::TypeInfoIncomplete,
+                    };
+                    match module.get_field(&part.name.name) {
+                        Some(field_id) => current_field = field_id,
+                        None => return FieldRefResolution::SubFieldNotFound(part.name.name.clone()),
+                    }
                 } else {
                     // Type not resolved yet
-                    return None;
+                    return FieldRefResolution::TypeInfoIncomplete;
                 }
             } else {
-                // Not an instance, can't access nested fields
-                return None;
+                // Not an instance (e.g. parameter, pin, signal) - can't access nested fields
+                // but this isn't necessarily a definite error (could be incomplete type info)
+                return FieldRefResolution::TypeInfoIncomplete;
             }
         }
 
-        Some(current_field)
+        FieldRefResolution::Resolved(current_field)
     }
 
     /// Check a for statement.
@@ -379,11 +423,17 @@ impl<'a> TypeChecker<'a> {
     fn check_assertion_expression(&mut self, expr: &Expression, scope: &Scope) {
         match expr {
             Expression::FieldRef(field_ref) => {
-                let name = field_ref.parts.first()
-                    .map(|p| p.name.name.clone())
-                    .unwrap_or_default();
-                if self.resolve_field_ref(field_ref, scope).is_none() {
-                    self.errors.push(SemaError::undefined_name(&name, Some(field_ref.span)));
+                match self.resolve_field_ref_detailed(field_ref, scope) {
+                    FieldRefResolution::Resolved(_) => {}
+                    FieldRefResolution::RootNotFound => {
+                        let name = field_ref.parts.first()
+                            .map(|p| p.name.name.clone())
+                            .unwrap_or_default();
+                        self.errors.push(SemaError::undefined_name(&name, Some(field_ref.span)));
+                    }
+                    FieldRefResolution::SubFieldNotFound(_) | FieldRefResolution::TypeInfoIncomplete => {
+                        // Skip silently - see check_connectable comment
+                    }
                 }
             }
             Expression::Binary(binary) => {

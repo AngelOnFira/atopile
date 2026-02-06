@@ -307,8 +307,17 @@ fn assignable() -> impl Parser<Token, Assignable, Error = Simple<Token>> + Clone
         string_literal().map(Assignable::String),
         new_expr().map(Assignable::New),
         bool_literal().map(Assignable::Boolean),
-        physical_literal().map(Assignable::Physical),
-        arithmetic_expression().map(Assignable::Arithmetic),
+        // arithmetic_expression() handles physical literals as atoms, so it can
+        // also parse expressions like `300 * y` or `voltage * 1.5`. We extract
+        // standalone physical literals into Assignable::Physical for downstream
+        // lowering that distinguishes Range/Bilateral from simple quantities.
+        arithmetic_expression().map(|expr| {
+            if let Expression::Literal(Literal::Physical(phys)) = expr {
+                Assignable::Physical(phys)
+            } else {
+                Assignable::Arithmetic(expr)
+            }
+        }),
     ))
 }
 
