@@ -5,9 +5,10 @@
 
 use std::collections::HashMap;
 
-use ato_ir::{Design, FieldId, ModuleId};
+use ato_ir::{Design, EndpointKind, FieldId, FieldPathPart, ModuleId};
 use serde::{Deserialize, Serialize};
 
+use crate::kicad_library::LibraryMapper;
 use crate::ExportError;
 
 /// A component in the netlist.
@@ -169,6 +170,15 @@ impl Netlist {
     }
 }
 
+/// Extracted footprint info from module parameters.
+#[derive(Debug, Default)]
+struct FootprintInfo {
+    footprint: Option<String>,
+    #[allow(dead_code)]
+    package: Option<String>,
+    lcsc: Option<String>,
+}
+
 /// Builder for creating netlists from IR designs.
 pub struct NetlistBuilder<'a> {
     design: &'a Design,
@@ -176,10 +186,14 @@ pub struct NetlistBuilder<'a> {
     module_to_ref: HashMap<ModuleId, String>,
     /// Map from instance field ID to component reference.
     instance_to_ref: HashMap<FieldId, String>,
+    /// For array instances, map from (instance_field_id, array_index) to component reference.
+    array_instance_to_ref: HashMap<(FieldId, u32), String>,
     /// Reference counters for generating unique designators.
     ref_counters: HashMap<String, u32>,
     /// The netlist being built.
     netlist: Netlist,
+    /// Solved parameter values: maps field path strings to resolved value strings.
+    solved_values: HashMap<String, String>,
 }
 
 impl<'a> NetlistBuilder<'a> {
@@ -189,9 +203,17 @@ impl<'a> NetlistBuilder<'a> {
             design,
             module_to_ref: HashMap::new(),
             instance_to_ref: HashMap::new(),
+            array_instance_to_ref: HashMap::new(),
             ref_counters: HashMap::new(),
             netlist: Netlist::new(),
+            solved_values: HashMap::new(),
         }
+    }
+
+    /// Create a new netlist builder with solved parameter values.
+    pub fn with_solved_values(mut self, solved_values: HashMap<String, String>) -> Self {
+        self.solved_values = solved_values;
+        self
     }
 
     /// Build the netlist from the design.
@@ -261,20 +283,22 @@ impl<'a> NetlistBuilder<'a> {
     /// 1. Instance fields with resolved_type - each instance becomes a component
     /// 2. Modules with pins that aren't used as types - legacy/simple component model
     fn collect_components(&mut self) -> Result<(), ExportError> {
-        // Track which modules are used as types for instances
+        let mapper = LibraryMapper::new();
         let mut modules_used_as_types = std::collections::HashSet::new();
 
         // First pass: find instance fields and create components for them
         for module in self.design.modules() {
             for &field_id in &module.fields {
                 if let Some(field) = self.design.get_field(field_id) {
-                    // Check if this is an Instance field with resolved_type
-                    if let ato_ir::FieldKind::Instance { resolved_type: Some(type_module_id), .. } = &field.kind {
+                    if let ato_ir::FieldKind::Instance {
+                        resolved_type: Some(type_module_id),
+                        count,
+                        ..
+                    } = &field.kind
+                    {
                         modules_used_as_types.insert(*type_module_id);
 
-                        // Get the target module to check if it has pins
                         if let Some(target_module) = self.design.get_module(*type_module_id) {
-                            // Check if the target module has pins (is a component)
                             let has_pins = target_module.fields.iter().any(|&fid| {
                                 self.design
                                     .get_field(fid)
@@ -283,21 +307,46 @@ impl<'a> NetlistBuilder<'a> {
                             });
 
                             if has_pins {
-                                // Create a component for this instance
-                                let prefix = self.get_designator_prefix(*type_module_id);
-                                let reference = self.generate_reference(&prefix);
+                                let footprint_info =
+                                    self.extract_footprint_info(*type_module_id, &mapper);
 
-                                // Get value from the target module's parameters
-                                let value = self.get_module_value(*type_module_id);
+                                // Expand array instances
+                                let instance_count = match count {
+                                    Some(n) if *n > 1 => *n,
+                                    _ => 1,
+                                };
 
-                                let component = NetlistComponent::new(&reference, value)
-                                    .with_property("module", target_module.name.clone())
-                                    .with_property("instance", field.name.clone());
+                                for idx in 0..instance_count {
+                                    let prefix = self.get_designator_prefix(*type_module_id);
+                                    let reference = self.generate_reference(&prefix);
+                                    let value =
+                                        self.get_instance_value(&field.name, *type_module_id);
 
-                                // Map both the instance field and the module for lookup
-                                self.instance_to_ref.insert(field_id, reference.clone());
-                                // Don't overwrite module_to_ref here since multiple instances share the same type
-                                self.netlist.add_component(component);
+                                    let mut component =
+                                        NetlistComponent::new(&reference, &value)
+                                            .with_property("module", target_module.name.clone())
+                                            .with_property("instance", field.name.clone());
+
+                                    if let Some(ref fp) = footprint_info.footprint {
+                                        component = component.with_footprint(fp.clone());
+                                    }
+                                    if let Some(ref lcsc) = footprint_info.lcsc {
+                                        component =
+                                            component.with_property("lcsc", lcsc.clone());
+                                    }
+
+                                    if instance_count > 1 {
+                                        component = component
+                                            .with_property("array_index", idx.to_string());
+                                        self.array_instance_to_ref
+                                            .insert((field_id, idx), reference.clone());
+                                    } else {
+                                        self.instance_to_ref
+                                            .insert(field_id, reference.clone());
+                                    }
+
+                                    self.netlist.add_component(component);
+                                }
                             }
                         }
                     }
@@ -306,19 +355,14 @@ impl<'a> NetlistBuilder<'a> {
         }
 
         // Second pass: for modules with pins that aren't used as instance types
-        // (legacy/simple model where modules themselves are components)
         for module in self.design.modules() {
-            // Skip if this module is used as a type for instances
             if modules_used_as_types.contains(&module.id) {
                 continue;
             }
-
-            // Skip interfaces
             if module.is_interface() {
                 continue;
             }
 
-            // Check if this module has pins
             let has_pins = module.fields.iter().any(|&field_id| {
                 self.design
                     .get_field(field_id)
@@ -329,11 +373,18 @@ impl<'a> NetlistBuilder<'a> {
             if has_pins {
                 let prefix = self.get_designator_prefix(module.id);
                 let reference = self.generate_reference(&prefix);
-
                 let value = self.get_module_value(module.id);
+                let footprint_info = self.extract_footprint_info(module.id, &mapper);
 
-                let component = NetlistComponent::new(&reference, value)
+                let mut component = NetlistComponent::new(&reference, value)
                     .with_property("module", module.name.clone());
+
+                if let Some(ref fp) = footprint_info.footprint {
+                    component = component.with_footprint(fp.clone());
+                }
+                if let Some(ref lcsc) = footprint_info.lcsc {
+                    component = component.with_property("lcsc", lcsc.clone());
+                }
 
                 self.module_to_ref.insert(module.id, reference);
                 self.netlist.add_component(component);
@@ -346,41 +397,199 @@ impl<'a> NetlistBuilder<'a> {
     /// Get the value string for a module (e.g., "10k" for a resistor).
     fn get_module_value(&self, module_id: ModuleId) -> String {
         if let Some(module) = self.design.get_module(module_id) {
-            // Look for common parameter names
             for param_name in &["resistance", "capacitance", "inductance", "value"] {
                 if let Some(field_id) = module.get_field(param_name) {
                     if let Some(field) = self.design.get_field(field_id) {
                         if field.is_parameter() {
-                            // Return the field name as placeholder
-                            // In a real implementation, we'd get the solved value
                             return format!("${}", param_name);
                         }
                     }
                 }
             }
-            // Default to module name
             return module.name.clone();
         }
         "?".to_string()
     }
 
-    /// Build nets from the connection graph.
+    /// Get the value string for an instance, checking solved_values first.
+    fn get_instance_value(&self, instance_name: &str, type_module_id: ModuleId) -> String {
+        if let Some(module) = self.design.get_module(type_module_id) {
+            for param_name in &["resistance", "capacitance", "inductance", "value"] {
+                if let Some(field_id) = module.get_field(param_name) {
+                    if let Some(field) = self.design.get_field(field_id) {
+                        if field.is_parameter() {
+                            let qualified_key = format!("{}.{}", instance_name, param_name);
+                            if let Some(solved) = self.solved_values.get(&qualified_key) {
+                                return solved.clone();
+                            }
+                            if let Some(solved) = self.solved_values.get(*param_name) {
+                                return solved.clone();
+                            }
+                            return format!("${}", param_name);
+                        }
+                    }
+                }
+            }
+            return module.name.clone();
+        }
+        "?".to_string()
+    }
+
+    /// Extract footprint information from a module's fields.
+    fn extract_footprint_info(
+        &self,
+        module_id: ModuleId,
+        mapper: &LibraryMapper,
+    ) -> FootprintInfo {
+        let mut info = FootprintInfo::default();
+
+        if let Some(module) = self.design.get_module(module_id) {
+            if let Some(field_id) = module.get_field("footprint") {
+                if let Some(field) = self.design.get_field(field_id) {
+                    if field.is_parameter() {
+                        if let Some(solved) = self.solved_values.get("footprint") {
+                            info.footprint = Some(solved.clone());
+                        }
+                    }
+                }
+            }
+
+            if info.footprint.is_none() {
+                if let Some(field_id) = module.get_field("package") {
+                    if let Some(field) = self.design.get_field(field_id) {
+                        if field.is_parameter() {
+                            if let Some(solved) = self.solved_values.get("package") {
+                                let prefix = self.get_designator_prefix(module_id);
+                                let fp_name = mapper.get_footprint_name(
+                                    &format!("{}1", prefix),
+                                    Some(solved),
+                                );
+                                info.footprint = Some(fp_name);
+                                info.package = Some(solved.clone());
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(field_id) = module.get_field("lcsc") {
+                if let Some(field) = self.design.get_field(field_id) {
+                    if field.is_parameter() {
+                        if let Some(solved) = self.solved_values.get("lcsc") {
+                            info.lcsc = Some(solved.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        info
+    }
+
+    /// Build nets from the connection graph and connections.
     fn build_nets(&mut self) -> Result<(), ExportError> {
-        // Rebuild connection graph if needed
-        let mut visited_fields: std::collections::HashSet<FieldId> = std::collections::HashSet::new();
+        // Build reverse map: module_id -> list of (instance_field_id, ref_name)
+        let mut module_to_instances: HashMap<ModuleId, Vec<(FieldId, String)>> = HashMap::new();
+        for (&field_id, ref_name) in &self.instance_to_ref {
+            if let Some(field) = self.design.get_field(field_id) {
+                if let ato_ir::FieldKind::Instance {
+                    resolved_type: Some(type_id),
+                    ..
+                } = &field.kind
+                {
+                    module_to_instances
+                        .entry(*type_id)
+                        .or_default()
+                        .push((field_id, ref_name.clone()));
+                }
+            }
+        }
+        for (&(field_id, _idx), ref_name) in &self.array_instance_to_ref {
+            if let Some(field) = self.design.get_field(field_id) {
+                if let ato_ir::FieldKind::Instance {
+                    resolved_type: Some(type_id),
+                    ..
+                } = &field.kind
+                {
+                    module_to_instances
+                        .entry(*type_id)
+                        .or_default()
+                        .push((field_id, ref_name.clone()));
+                }
+            }
+        }
+
+        // Build instance_name -> component ref map
+        let mut instance_name_to_ref: HashMap<String, String> = HashMap::new();
+        for (&field_id, ref_name) in &self.instance_to_ref {
+            if let Some(field) = self.design.get_field(field_id) {
+                instance_name_to_ref.insert(field.name.clone(), ref_name.clone());
+            }
+        }
+
+        // Connection-based net building
+        let mut net_groups: HashMap<String, Vec<NetNode>> = HashMap::new();
         let mut net_counter = 0u32;
 
-        // Iterate through all fields and find connected components
+        for connection in self.design.connections() {
+            if connection.is_simple() {
+                if let (Some(left), Some(right)) = (connection.left(), connection.right()) {
+                    if let (Some(left_id), Some(right_id)) = (left.resolved, right.resolved) {
+                        let left_node =
+                            self.resolve_endpoint_to_node(left, left_id, &instance_name_to_ref);
+                        let right_node =
+                            self.resolve_endpoint_to_node(right, right_id, &instance_name_to_ref);
+
+                        if let (Some(ln), Some(rn)) = (left_node, right_node) {
+                            net_counter += 1;
+                            let net_key = format!("conn_{}", net_counter);
+                            let nodes = net_groups.entry(net_key).or_default();
+                            if !nodes.contains(&ln) {
+                                nodes.push(ln);
+                            }
+                            if !nodes.contains(&rn) {
+                                nodes.push(rn);
+                            }
+                        }
+                    }
+                }
+            } else {
+                for window in connection.endpoints.windows(2) {
+                    let (ep_a, ep_b) = (&window[0], &window[1]);
+                    if let (Some(a_id), Some(b_id)) = (ep_a.resolved, ep_b.resolved) {
+                        let node_a =
+                            self.resolve_endpoint_to_node(ep_a, a_id, &instance_name_to_ref);
+                        let node_b =
+                            self.resolve_endpoint_to_node(ep_b, b_id, &instance_name_to_ref);
+
+                        if let (Some(na), Some(nb)) = (node_a, node_b) {
+                            net_counter += 1;
+                            let net_key = format!("conn_{}", net_counter);
+                            let nodes = net_groups.entry(net_key).or_default();
+                            if !nodes.contains(&na) {
+                                nodes.push(na);
+                            }
+                            if !nodes.contains(&nb) {
+                                nodes.push(nb);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Graph-based net building for module-based (non-instance) components
+        let mut visited_fields: std::collections::HashSet<FieldId> =
+            std::collections::HashSet::new();
+
         for field in self.design.fields() {
             if !field.is_connectable() || visited_fields.contains(&field.id) {
                 continue;
             }
 
-            // Get all fields in this net (connected component)
             let connected = self.design.connection_graph().connected_component(field.id);
 
             if connected.len() > 1 {
-                // Create a net for this connected component
                 net_counter += 1;
                 let net_name = self.generate_net_name(&connected, net_counter);
                 let mut net = Net::new(&net_name);
@@ -390,15 +599,26 @@ impl<'a> NetlistBuilder<'a> {
 
                     if let Some(field) = self.design.get_field(field_id) {
                         if field.is_pin() {
-                            // Find the component this pin belongs to
                             if let Some(ref_name) = self.module_to_ref.get(&field.parent) {
-                                net.add_node(NetNode::new(ref_name.clone(), &field.name));
+                                let node = NetNode::new(ref_name.clone(), &field.name);
+                                if !net.nodes.contains(&node) {
+                                    net.add_node(node);
+                                }
+                            } else if let Some(instances) =
+                                module_to_instances.get(&field.parent)
+                            {
+                                if instances.len() == 1 {
+                                    let ref_name = &instances[0].1;
+                                    let node = NetNode::new(ref_name.clone(), &field.name);
+                                    if !net.nodes.contains(&node) {
+                                        net.add_node(node);
+                                    }
+                                }
                             }
                         }
                     }
                 }
 
-                // Only add nets with actual connections
                 if net.nodes.len() > 1 {
                     self.netlist.add_net(net);
                 }
@@ -407,7 +627,48 @@ impl<'a> NetlistBuilder<'a> {
             }
         }
 
+        // Convert connection-based nets
+        for (_, nodes) in net_groups {
+            if nodes.len() > 1 {
+                net_counter += 1;
+                let mut net = Net::new(format!("Net{}", net_counter));
+                for node in nodes {
+                    net.add_node(node);
+                }
+                self.netlist.add_net(net);
+            }
+        }
+
         Ok(())
+    }
+
+    /// Resolve a connection endpoint to a NetNode.
+    fn resolve_endpoint_to_node(
+        &self,
+        endpoint: &ato_ir::ConnectionEndpoint,
+        resolved_field_id: FieldId,
+        instance_name_to_ref: &HashMap<String, String>,
+    ) -> Option<NetNode> {
+        if let Some(field) = self.design.get_field(resolved_field_id) {
+            if !field.is_pin() {
+                return None;
+            }
+
+            if let Some(ref_name) = self.module_to_ref.get(&field.parent) {
+                return Some(NetNode::new(ref_name.clone(), &field.name));
+            }
+
+            if let EndpointKind::FieldRef(path) = &endpoint.kind {
+                if let Some(first) = path.parts.first() {
+                    if let FieldPathPart::Name(instance_name) = first {
+                        if let Some(ref_name) = instance_name_to_ref.get(instance_name) {
+                            return Some(NetNode::new(ref_name.clone(), &field.name));
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Generate a net name from connected fields.
@@ -429,7 +690,10 @@ impl<'a> NetlistBuilder<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ato_ir::{ModuleKind, FieldKind, FieldPath, FieldPathPart, ConnectionEndpoint, TraitRef, QualifiedName, TemplateArgValue};
+    use ato_ir::{
+        ConnectionEndpoint, FieldKind, FieldPath, FieldPathPart, ModuleKind, QualifiedName,
+        TemplateArgValue, TraitRef,
+    };
 
     #[test]
     fn test_netlist_component() {
@@ -686,8 +950,134 @@ mod tests {
         // Should have 2 components (r1 and r2)
         assert_eq!(netlist.component_count(), 2, "Should have 2 instance components");
 
-        // Net building with shared pins requires more sophisticated handling
-        // that maps instance paths to components. For now, verify components are created.
-        // The net assertion is relaxed since instance-based net building is complex.
+        // Now also verify net building works with instance paths
+        let has_connection = netlist.nets.iter().any(|net| {
+            let has_r1_p2 = net
+                .nodes
+                .iter()
+                .any(|n| n.component == "R1" && n.pin == "p2");
+            let has_r2_p1 = net
+                .nodes
+                .iter()
+                .any(|n| n.component == "R2" && n.pin == "p1");
+            has_r1_p2 && has_r2_p1
+        });
+
+        assert!(
+            has_connection,
+            "Should have a net connecting R1.p2 to R2.p1, got nets: {:?}",
+            netlist.nets
+        );
+    }
+
+    #[test]
+    fn test_array_instance_expansion() {
+        let mut design = Design::new();
+
+        let resistor_id = design.create_module("Resistor", ModuleKind::Module);
+        design.add_field(resistor_id, "p1", FieldKind::pin("1"));
+        design.add_field(resistor_id, "p2", FieldKind::pin("2"));
+
+        let app_id = design.create_module("App", ModuleKind::Module);
+        let array_kind = FieldKind::Instance {
+            type_ref: QualifiedName::simple("Resistor"),
+            count: Some(3),
+            resolved_type: Some(resistor_id),
+        };
+        design.add_field(app_id, "resistors", array_kind);
+
+        let builder = NetlistBuilder::new(&design);
+        let netlist = builder.build().unwrap();
+
+        assert_eq!(
+            netlist.component_count(),
+            3,
+            "Array of 3 resistors should create 3 components, got: {:?}",
+            netlist
+                .components
+                .iter()
+                .map(|c| &c.reference)
+                .collect::<Vec<_>>()
+        );
+
+        assert!(netlist.get_component("R1").is_some());
+        assert!(netlist.get_component("R2").is_some());
+        assert!(netlist.get_component("R3").is_some());
+
+        for (i, ref_name) in ["R1", "R2", "R3"].iter().enumerate() {
+            let comp = netlist.get_component(ref_name).unwrap();
+            assert_eq!(
+                comp.properties.get("array_index"),
+                Some(&i.to_string()),
+            );
+        }
+    }
+
+    #[test]
+    fn test_solved_values() {
+        let mut design = Design::new();
+
+        let resistor_id = design.create_module("Resistor", ModuleKind::Module);
+        design.add_field(resistor_id, "p1", FieldKind::pin("1"));
+        design.add_field(resistor_id, "p2", FieldKind::pin("2"));
+        design.add_field(
+            resistor_id,
+            "resistance",
+            FieldKind::parameter_with_unit("ohm"),
+        );
+
+        let app_id = design.create_module("App", ModuleKind::Module);
+        let r1_kind = FieldKind::Instance {
+            type_ref: QualifiedName::simple("Resistor"),
+            count: None,
+            resolved_type: Some(resistor_id),
+        };
+        design.add_field(app_id, "r1", r1_kind);
+
+        let mut solved = HashMap::new();
+        solved.insert("r1.resistance".to_string(), "10kohm".to_string());
+
+        let builder = NetlistBuilder::new(&design).with_solved_values(solved);
+        let netlist = builder.build().unwrap();
+
+        assert_eq!(netlist.component_count(), 1);
+        let comp = netlist.get_component("R1").unwrap();
+        assert_eq!(comp.value, "10kohm");
+    }
+
+    #[test]
+    fn test_footprint_propagation() {
+        let mut design = Design::new();
+
+        let resistor_id = design.create_module("Resistor", ModuleKind::Module);
+        design.add_field(resistor_id, "p1", FieldKind::pin("1"));
+        design.add_field(resistor_id, "p2", FieldKind::pin("2"));
+        design.add_field(
+            resistor_id,
+            "resistance",
+            FieldKind::parameter_with_unit("ohm"),
+        );
+        design.add_field(resistor_id, "package", FieldKind::parameter());
+        design.add_field(resistor_id, "lcsc", FieldKind::parameter());
+
+        let app_id = design.create_module("App", ModuleKind::Module);
+        let r1_kind = FieldKind::Instance {
+            type_ref: QualifiedName::simple("Resistor"),
+            count: None,
+            resolved_type: Some(resistor_id),
+        };
+        design.add_field(app_id, "r1", r1_kind);
+
+        let mut solved = HashMap::new();
+        solved.insert("package".to_string(), "0402".to_string());
+        solved.insert("lcsc".to_string(), "C25076".to_string());
+
+        let builder = NetlistBuilder::new(&design).with_solved_values(solved);
+        let netlist = builder.build().unwrap();
+
+        let comp = netlist.get_component("R1").unwrap();
+        assert!(comp.footprint.is_some());
+        assert!(comp.footprint.as_ref().unwrap().contains("R_0402_1005Metric"));
+        assert_eq!(comp.properties.get("lcsc"), Some(&"C25076".to_string()));
     }
 }

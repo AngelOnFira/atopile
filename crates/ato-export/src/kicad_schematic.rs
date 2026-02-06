@@ -249,7 +249,7 @@ pub struct SymbolUnit {
 impl SymbolUnit {
     fn write<W: Write>(&self, writer: &mut W, indent: usize) -> Result<(), ExportError> {
         let pad = " ".repeat(indent);
-        writeln!(writer, "{}(symbol \"_{}_{}\"))", pad, self.unit, 1)?;
+        writeln!(writer, "{}(symbol \"_{}_{}\")", pad, self.unit, 1)?;
         Ok(())
     }
 }
