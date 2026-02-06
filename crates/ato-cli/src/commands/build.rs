@@ -347,8 +347,46 @@ pub fn run(target: Option<&str>, output: Option<&Path>, verbose: bool) -> CliRes
         println!("    Output directory: {}", output_dir.display());
     }
 
+    // Determine entry module for the netlist builder.
+    // Priority: design entry_module > build target root_module > name match from file stem
+    let entry_module = design.entry_module().or_else(|| {
+        // Try the root module name from the build target
+        if let Some(ref root_name) = build_target._root_module {
+            return design.find_module(root_name);
+        }
+        // Try to find a module whose name matches the file stem (case-insensitive)
+        let file_stem = path.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_lowercase()
+            .replace('-', "_");
+        if !file_stem.is_empty() {
+            for m in design.modules() {
+                if !m.is_interface() && m.name.to_lowercase().replace('-', "_") == file_stem {
+                    return Some(m.id);
+                }
+            }
+        }
+        // Fall back to the last non-interface module that has instance fields
+        design.modules().iter().rev()
+            .find(|m| {
+                !m.is_interface() && m.fields.iter().any(|&fid| {
+                    design.get_field(fid).map(|f| f.is_instance()).unwrap_or(false)
+                })
+            })
+            .map(|m| m.id)
+    });
+
     // Build netlist from design
-    let builder = NetlistBuilder::new(&design);
+    let mut builder = NetlistBuilder::new(&design);
+    if let Some(entry_id) = entry_module {
+        if verbose {
+            if let Some(m) = design.get_module(entry_id) {
+                println!("    Entry module: {}", m.name);
+            }
+        }
+        builder = builder.with_entry_module(entry_id);
+    }
     let netlist = match builder.build() {
         Ok(netlist) => netlist,
         Err(e) => {

@@ -170,8 +170,8 @@ impl Netlist {
     }
 }
 
-/// Extracted footprint info from module parameters.
-#[derive(Debug, Default)]
+/// Extracted footprint info from module traits and parameters.
+#[derive(Debug, Default, Clone)]
 struct FootprintInfo {
     footprint: Option<String>,
     #[allow(dead_code)]
@@ -194,6 +194,8 @@ pub struct NetlistBuilder<'a> {
     netlist: Netlist,
     /// Solved parameter values: maps field path strings to resolved value strings.
     solved_values: HashMap<String, String>,
+    /// Optional entry module to scope component collection.
+    entry_module: Option<ModuleId>,
 }
 
 impl<'a> NetlistBuilder<'a> {
@@ -207,12 +209,19 @@ impl<'a> NetlistBuilder<'a> {
             ref_counters: HashMap::new(),
             netlist: Netlist::new(),
             solved_values: HashMap::new(),
+            entry_module: None,
         }
     }
 
     /// Create a new netlist builder with solved parameter values.
     pub fn with_solved_values(mut self, solved_values: HashMap<String, String>) -> Self {
         self.solved_values = solved_values;
+        self
+    }
+
+    /// Set the entry module to scope component collection.
+    pub fn with_entry_module(mut self, entry_module: ModuleId) -> Self {
+        self.entry_module = Some(entry_module);
         self
     }
 
@@ -277,75 +286,102 @@ impl<'a> NetlistBuilder<'a> {
         "U".to_string()
     }
 
-    /// Collect all components from the design.
-    ///
-    /// This supports two patterns:
-    /// 1. Instance fields with resolved_type - each instance becomes a component
-    /// 2. Modules with pins that aren't used as types - legacy/simple component model
-    fn collect_components(&mut self) -> Result<(), ExportError> {
-        let mapper = LibraryMapper::new();
-        let mut modules_used_as_types = std::collections::HashSet::new();
+    /// Check if a module is a physical component (has pins directly).
+    fn module_has_pins(&self, module_id: ModuleId) -> bool {
+        if let Some(module) = self.design.get_module(module_id) {
+            module.fields.iter().any(|&fid| {
+                self.design
+                    .get_field(fid)
+                    .map(|f| f.is_pin())
+                    .unwrap_or(false)
+            })
+        } else {
+            false
+        }
+    }
 
-        // First pass: find instance fields and create components for them
-        for module in self.design.modules() {
-            for &field_id in &module.fields {
-                if let Some(field) = self.design.get_field(field_id) {
-                    if let ato_ir::FieldKind::Instance {
-                        resolved_type: Some(type_module_id),
-                        count,
-                        ..
-                    } = &field.kind
-                    {
-                        modules_used_as_types.insert(*type_module_id);
+    /// Check if a module has instance sub-fields (is a container).
+    fn module_has_instances(&self, module_id: ModuleId) -> bool {
+        if let Some(module) = self.design.get_module(module_id) {
+            module.fields.iter().any(|&fid| {
+                self.design
+                    .get_field(fid)
+                    .map(|f| f.is_instance())
+                    .unwrap_or(false)
+            })
+        } else {
+            false
+        }
+    }
 
-                        if let Some(target_module) = self.design.get_module(*type_module_id) {
-                            let has_pins = target_module.fields.iter().any(|&fid| {
-                                self.design
-                                    .get_field(fid)
-                                    .map(|f| f.is_pin())
-                                    .unwrap_or(false)
-                            });
+    /// Check if a module is a "physical component" - a leaf-level module that
+    /// corresponds to a real part on the PCB. Detection criteria:
+    /// 1. Has pins directly (package-level components)
+    /// 2. Has `has_designator_prefix` trait (stdlib passives like Resistor, Capacitor)
+    /// 3. Has a `package` parameter (passive components with solved package value)
+    fn is_physical_component(&self, module_id: ModuleId) -> bool {
+        if self.module_has_pins(module_id) {
+            return true;
+        }
+        if let Some(module) = self.design.get_module(module_id) {
+            // Check for has_designator_prefix trait - definitive marker for physical components
+            for trait_ref in &module.traits {
+                if trait_ref.name.name() == "has_designator_prefix" {
+                    return true;
+                }
+            }
+            // Check for `package` parameter (passives use this for part picking)
+            for &fid in &module.fields {
+                if let Some(field) = self.design.get_field(fid) {
+                    if field.name == "package" && field.is_parameter() {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
 
-                            if has_pins {
-                                let footprint_info =
-                                    self.extract_footprint_info(*type_module_id, &mapper);
+    /// Get the designator prefix for a module, checking its package instance chain.
+    fn get_designator_prefix_deep(&self, module_id: ModuleId) -> String {
+        // First try from traits on this module
+        if let Some(module) = self.design.get_module(module_id) {
+            for trait_ref in &module.traits {
+                if trait_ref.name.name() == "has_designator_prefix" {
+                    if trait_ref.constructor.as_deref() == Some("prefix") {
+                        if let Some(value) = trait_ref.get_string_arg("value") {
+                            return value.to_string();
+                        }
+                    }
+                }
+            }
+        }
 
-                                // Expand array instances
-                                let instance_count = match count {
-                                    Some(n) if *n > 1 => *n,
-                                    _ => 1,
-                                };
-
-                                for idx in 0..instance_count {
-                                    let prefix = self.get_designator_prefix(*type_module_id);
-                                    let reference = self.generate_reference(&prefix);
-                                    let value =
-                                        self.get_instance_value(&field.name, *type_module_id);
-
-                                    let mut component =
-                                        NetlistComponent::new(&reference, &value)
-                                            .with_property("module", target_module.name.clone())
-                                            .with_property("instance", field.name.clone());
-
-                                    if let Some(ref fp) = footprint_info.footprint {
-                                        component = component.with_footprint(fp.clone());
+        // Check the package instance chain for traits
+        if let Some(module) = self.design.get_module(module_id) {
+            for &fid in &module.fields {
+                if let Some(field) = self.design.get_field(fid) {
+                    if field.name == "package" {
+                        if let ato_ir::FieldKind::Instance {
+                            resolved_type: Some(pkg_id),
+                            ..
+                        } = &field.kind
+                        {
+                            // Check traits on the package module
+                            if let Some(pkg_module) = self.design.get_module(*pkg_id) {
+                                for trait_ref in &pkg_module.traits {
+                                    if trait_ref.name.name() == "has_designator_prefix" {
+                                        if trait_ref.constructor.as_deref() == Some("prefix") {
+                                            if let Some(value) = trait_ref.get_string_arg("value") {
+                                                return value.to_string();
+                                            }
+                                        }
                                     }
-                                    if let Some(ref lcsc) = footprint_info.lcsc {
-                                        component =
-                                            component.with_property("lcsc", lcsc.clone());
-                                    }
-
-                                    if instance_count > 1 {
-                                        component = component
-                                            .with_property("array_index", idx.to_string());
-                                        self.array_instance_to_ref
-                                            .insert((field_id, idx), reference.clone());
-                                    } else {
-                                        self.instance_to_ref
-                                            .insert(field_id, reference.clone());
-                                    }
-
-                                    self.netlist.add_component(component);
+                                }
+                                // Also check name heuristics on the package module
+                                let pkg_name = pkg_module.name.to_lowercase();
+                                if let Some(prefix) = Self::name_to_prefix(&pkg_name) {
+                                    return prefix;
                                 }
                             }
                         }
@@ -354,7 +390,101 @@ impl<'a> NetlistBuilder<'a> {
             }
         }
 
+        // Fall back to name-based heuristics on this module
+        if let Some(module) = self.design.get_module(module_id) {
+            let name = module.name.to_lowercase();
+            if let Some(prefix) = Self::name_to_prefix(&name) {
+                return prefix;
+            }
+        }
+
+        "U".to_string()
+    }
+
+    /// Map a module name (lowercased) to a designator prefix using heuristics.
+    fn name_to_prefix(name: &str) -> Option<String> {
+        if name.contains("resistor") {
+            Some("R".to_string())
+        } else if name.contains("capacitor") {
+            Some("C".to_string())
+        } else if name.contains("inductor") {
+            Some("L".to_string())
+        } else if name.contains("diode") || name == "led" {
+            Some("D".to_string())
+        } else if name.contains("transistor") || name.contains("mosfet") {
+            Some("Q".to_string())
+        } else if name.contains("connector") || name.contains("molex") || name.contains("jst") {
+            Some("J".to_string())
+        } else if name.contains("crystal") {
+            Some("Y".to_string())
+        } else if name.contains("button") || name.contains("switch") || name.contains("skrpace")
+            || name.contains("sktdlde")
+        {
+            Some("SW".to_string())
+        } else if name.contains("sk6805") || name.contains("ws2812") || name.contains("sk6812")
+            || name.contains("neopixel")
+        {
+            Some("LED".to_string())
+        } else {
+            None
+        }
+    }
+
+    /// Collect all components from the design.
+    ///
+    /// Walks the module instance hierarchy recursively starting from the entry
+    /// module (if set) or all root modules. Finds leaf components that have
+    /// pins or contain a `package` instance with pins.
+    ///
+    /// Also handles legacy modules with pins that aren't instantiated anywhere.
+    fn collect_components(&mut self) -> Result<(), ExportError> {
+        let mapper = LibraryMapper::new();
+        let mut modules_used_as_types = std::collections::HashSet::new();
+
+        // Collect all modules used as instance types or super_types
+        for module in self.design.modules() {
+            // Track modules used as super types (base classes) - they aren't standalone components
+            if let Some(super_id) = module.super_type {
+                modules_used_as_types.insert(super_id);
+            }
+            for &field_id in &module.fields {
+                if let Some(field) = self.design.get_field(field_id) {
+                    if let ato_ir::FieldKind::Instance {
+                        resolved_type: Some(type_module_id),
+                        ..
+                    } = &field.kind
+                    {
+                        modules_used_as_types.insert(*type_module_id);
+                    }
+                }
+            }
+        }
+
+        // Determine which modules to walk from
+        let root_modules: Vec<ModuleId> = if let Some(entry) = self.entry_module {
+            vec![entry]
+        } else {
+            // Walk from modules that are not themselves used as instance types
+            // and are not interfaces
+            self.design
+                .modules()
+                .iter()
+                .filter(|m| !m.is_interface() && !modules_used_as_types.contains(&m.id))
+                .map(|m| m.id)
+                .collect()
+        };
+
+        // Recursively collect components from root modules
+        for root_id in &root_modules {
+            self.collect_components_recursive(*root_id, "", &mapper, &mut std::collections::HashSet::new());
+        }
+
         // Second pass: for modules with pins that aren't used as instance types
+        // and haven't already been added (legacy/simple component model).
+        // Skip when entry_module is set - we only want components reachable from entry.
+        if self.entry_module.is_some() {
+            return Ok(());
+        }
         for module in self.design.modules() {
             if modules_used_as_types.contains(&module.id) {
                 continue;
@@ -362,14 +492,12 @@ impl<'a> NetlistBuilder<'a> {
             if module.is_interface() {
                 continue;
             }
+            // Skip if already added through instance collection
+            if self.module_to_ref.contains_key(&module.id) {
+                continue;
+            }
 
-            let has_pins = module.fields.iter().any(|&field_id| {
-                self.design
-                    .get_field(field_id)
-                    .map(|f| f.is_pin())
-                    .unwrap_or(false)
-            });
-
+            let has_pins = self.module_has_pins(module.id);
             if has_pins {
                 let prefix = self.get_designator_prefix(module.id);
                 let reference = self.generate_reference(&prefix);
@@ -392,6 +520,146 @@ impl<'a> NetlistBuilder<'a> {
         }
 
         Ok(())
+    }
+
+    /// Recursively collect components from a module's instance hierarchy.
+    ///
+    /// For each instance field in the module:
+    /// - If the target is a physical component (has pins), add it as a component
+    /// - If the target is a container (has instances but no pins), recurse into it
+    /// - Array instances are expanded: each element is processed separately
+    fn collect_components_recursive(
+        &mut self,
+        module_id: ModuleId,
+        path_prefix: &str,
+        mapper: &LibraryMapper,
+        visited: &mut std::collections::HashSet<ModuleId>,
+    ) {
+        // Prevent infinite recursion
+        if !visited.insert(module_id) {
+            return;
+        }
+
+        let module = match self.design.get_module(module_id) {
+            Some(m) => m,
+            None => return,
+        };
+
+        // Collect instance fields from this module
+        let instance_fields: Vec<(FieldId, String, Option<u32>, Option<ModuleId>)> = module
+            .fields
+            .iter()
+            .filter_map(|&fid| {
+                let field = self.design.get_field(fid)?;
+                if let ato_ir::FieldKind::Instance {
+                    count,
+                    resolved_type,
+                    ..
+                } = &field.kind
+                {
+                    Some((fid, field.name.clone(), *count, *resolved_type))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for (field_id, field_name, count, resolved_type) in instance_fields {
+            let type_module_id = match resolved_type {
+                Some(id) => id,
+                None => continue,
+            };
+
+            // Skip interfaces
+            if let Some(target) = self.design.get_module(type_module_id) {
+                if target.is_interface() {
+                    continue;
+                }
+            }
+
+            let instance_count = match count {
+                Some(n) if n > 1 => n,
+                _ => 1,
+            };
+
+            let is_leaf = self.is_physical_component(type_module_id);
+            let is_container = self.module_has_instances(type_module_id);
+
+            if is_leaf {
+                // This is a physical component - add it
+                let footprint_info = self.extract_footprint_info(type_module_id, mapper);
+                let target_name = self.design.get_module(type_module_id)
+                    .map(|m| m.name.clone())
+                    .unwrap_or_default();
+
+                for idx in 0..instance_count {
+                    let prefix = self.get_designator_prefix_deep(type_module_id);
+                    let reference = self.generate_reference(&prefix);
+
+                    let instance_path = if instance_count > 1 {
+                        if path_prefix.is_empty() {
+                            format!("{}[{}]", field_name, idx)
+                        } else {
+                            format!("{}.{}[{}]", path_prefix, field_name, idx)
+                        }
+                    } else if path_prefix.is_empty() {
+                        field_name.clone()
+                    } else {
+                        format!("{}.{}", path_prefix, field_name)
+                    };
+
+                    let value = self.get_instance_value(&instance_path, type_module_id);
+
+                    let mut component = NetlistComponent::new(&reference, &value)
+                        .with_property("module", target_name.clone())
+                        .with_property("instance", instance_path);
+
+                    if let Some(ref fp) = footprint_info.footprint {
+                        component = component.with_footprint(fp.clone());
+                    }
+                    if let Some(ref lcsc) = footprint_info.lcsc {
+                        component = component.with_property("lcsc", lcsc.clone());
+                    }
+
+                    if instance_count > 1 {
+                        component = component.with_property("array_index", idx.to_string());
+                        self.array_instance_to_ref
+                            .insert((field_id, idx), reference.clone());
+                    } else {
+                        self.instance_to_ref.insert(field_id, reference.clone());
+                    }
+
+                    self.netlist.add_component(component);
+                }
+            } else if is_container {
+                // This is a container - recurse into it
+                for idx in 0..instance_count {
+                    let sub_prefix = if instance_count > 1 {
+                        if path_prefix.is_empty() {
+                            format!("{}[{}]", field_name, idx)
+                        } else {
+                            format!("{}.{}[{}]", path_prefix, field_name, idx)
+                        }
+                    } else if path_prefix.is_empty() {
+                        field_name.clone()
+                    } else {
+                        format!("{}.{}", path_prefix, field_name)
+                    };
+
+                    // Need a fresh visited set for this branch to allow shared types
+                    let mut branch_visited = std::collections::HashSet::new();
+                    self.collect_components_recursive(
+                        type_module_id,
+                        &sub_prefix,
+                        mapper,
+                        &mut branch_visited,
+                    );
+                }
+            }
+        }
+
+        // Remove from visited so the same module type can be used in other branches
+        visited.remove(&module_id);
     }
 
     /// Get the value string for a module (e.g., "10k" for a resistor).
@@ -439,7 +707,7 @@ impl<'a> NetlistBuilder<'a> {
         "?".to_string()
     }
 
-    /// Extract footprint information from a module's fields.
+    /// Extract footprint information from a module's traits and fields.
     fn extract_footprint_info(
         &self,
         module_id: ModuleId,
@@ -448,39 +716,56 @@ impl<'a> NetlistBuilder<'a> {
         let mut info = FootprintInfo::default();
 
         if let Some(module) = self.design.get_module(module_id) {
-            if let Some(field_id) = module.get_field("footprint") {
-                if let Some(field) = self.design.get_field(field_id) {
-                    if field.is_parameter() {
-                        if let Some(solved) = self.solved_values.get("footprint") {
-                            info.footprint = Some(solved.clone());
-                        }
-                    }
-                }
-            }
+            // Check traits on this module directly
+            self.extract_traits_from_chain(module_id, &mut info);
 
-            if info.footprint.is_none() {
-                if let Some(field_id) = module.get_field("package") {
-                    if let Some(field) = self.design.get_field(field_id) {
-                        if field.is_parameter() {
+            // Check the `package` field's target module for traits
+            if let Some(pkg_field_id) = module.get_field("package") {
+                if let Some(field) = self.design.get_field(pkg_field_id) {
+                    match &field.kind {
+                        ato_ir::FieldKind::Instance {
+                            resolved_type: Some(pkg_module_id), ..
+                        } => {
+                            self.extract_traits_from_chain(*pkg_module_id, &mut info);
+                        }
+                        ato_ir::FieldKind::Parameter { .. } => {
                             if let Some(solved) = self.solved_values.get("package") {
                                 let prefix = self.get_designator_prefix(module_id);
                                 let fp_name = mapper.get_footprint_name(
                                     &format!("{}1", prefix),
                                     Some(solved),
                                 );
-                                info.footprint = Some(fp_name);
+                                if info.footprint.is_none() {
+                                    info.footprint = Some(fp_name);
+                                }
                                 info.package = Some(solved.clone());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            // Check solved_values for explicit footprint/lcsc parameters
+            if info.footprint.is_none() {
+                if let Some(field_id) = module.get_field("footprint") {
+                    if let Some(field) = self.design.get_field(field_id) {
+                        if field.is_parameter() {
+                            if let Some(solved) = self.solved_values.get("footprint") {
+                                info.footprint = Some(solved.clone());
                             }
                         }
                     }
                 }
             }
 
-            if let Some(field_id) = module.get_field("lcsc") {
-                if let Some(field) = self.design.get_field(field_id) {
-                    if field.is_parameter() {
-                        if let Some(solved) = self.solved_values.get("lcsc") {
-                            info.lcsc = Some(solved.clone());
+            if info.lcsc.is_none() {
+                if let Some(field_id) = module.get_field("lcsc") {
+                    if let Some(field) = self.design.get_field(field_id) {
+                        if field.is_parameter() {
+                            if let Some(solved) = self.solved_values.get("lcsc") {
+                                info.lcsc = Some(solved.clone());
+                            }
                         }
                     }
                 }
@@ -488,6 +773,38 @@ impl<'a> NetlistBuilder<'a> {
         }
 
         info
+    }
+
+    /// Walk a module's inheritance chain to extract footprint/LCSC from traits.
+    fn extract_traits_from_chain(&self, start_module_id: ModuleId, info: &mut FootprintInfo) {
+        let mut current_id = Some(start_module_id);
+        let mut depth = 0;
+        while let Some(mid) = current_id {
+            if depth > 20 { break; }
+            depth += 1;
+            if let Some(module) = self.design.get_module(mid) {
+                for trait_ref in &module.traits {
+                    let trait_name = trait_ref.name.name();
+
+                    // is_atomic_part<footprint="X.kicad_mod">
+                    if trait_name == "is_atomic_part" && info.footprint.is_none() {
+                        if let Some(fp) = trait_ref.get_string_arg("footprint") {
+                            info.footprint = Some(fp.to_string());
+                        }
+                    }
+
+                    // has_part_picked::by_supplier<supplier_partno="C123">
+                    if trait_name == "has_part_picked" && info.lcsc.is_none() {
+                        if let Some(partno) = trait_ref.get_string_arg("supplier_partno") {
+                            info.lcsc = Some(partno.to_string());
+                        }
+                    }
+                }
+                current_id = module.super_type;
+            } else {
+                break;
+            }
+        }
     }
 
     /// Build nets from the connection graph and connections.

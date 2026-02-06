@@ -465,6 +465,11 @@ impl Analyzer {
                 .unwrap_or_default();
 
             if let Some(super_id) = design.find_module(&super_name) {
+                // Set super_type on the module
+                if let Some(module) = design.get_module_mut(module_id) {
+                    module.super_type = Some(super_id);
+                }
+
                 // Get inherited fields from the base class and copy them to this module
                 let inherited_fields: Vec<_> = design
                     .get_module(super_id)
@@ -481,6 +486,18 @@ impl Analyzer {
 
                 for (name, kind) in fields_to_copy {
                     design.add_field(module_id, &name, kind);
+                }
+
+                // Inherit traits from base class
+                let inherited_traits: Vec<_> = design
+                    .get_module(super_id)
+                    .map(|m| m.traits.clone())
+                    .unwrap_or_default();
+
+                if let Some(module) = design.get_module_mut(module_id) {
+                    for trait_ref in inherited_traits {
+                        module.add_trait(trait_ref);
+                    }
                 }
             }
         }
@@ -593,6 +610,9 @@ impl Analyzer {
                                     Self::add_connectable_field(element, module_id, design);
                                 }
                             }
+                            Statement::Trait(trait_stmt) => {
+                                Self::lower_trait_stmt(trait_stmt, module_id, design);
+                            }
                             _ => {}
                         }
                     }
@@ -622,6 +642,82 @@ impl Analyzer {
             }
             ato_parser::Connectable::FieldRef(_) => {
                 // Field references don't create new fields
+            }
+        }
+    }
+
+    /// Lower a trait statement from an imported module into the IR.
+    fn lower_trait_stmt(
+        trait_stmt: &ato_parser::TraitStmt,
+        module_id: ato_ir::ModuleId,
+        design: &mut Design,
+    ) {
+        let trait_name = ato_ir::QualifiedName::new(
+            trait_stmt.type_ref.parts
+                .iter()
+                .map(|p| p.name.clone())
+                .collect(),
+        );
+
+        let mut trait_ref = ato_ir::TraitRef::new(trait_name);
+
+        if let Some(constructor) = &trait_stmt.constructor {
+            trait_ref = trait_ref.with_constructor(&constructor.name);
+        }
+
+        // Process template arguments
+        if let Some(template) = &trait_stmt.template {
+            for arg in &template.args {
+                let arg_name = arg.name.name.clone();
+                let arg_value = Self::convert_literal_to_template_arg(&arg.value);
+                trait_ref = trait_ref.with_arg(arg_name, arg_value);
+            }
+        }
+
+        trait_ref.span = Some(trait_stmt.span);
+
+        if let Some(module) = design.get_module_mut(module_id) {
+            module.add_trait(trait_ref);
+        }
+    }
+
+    /// Convert a parser Literal to an IR TemplateArgValue.
+    fn convert_literal_to_template_arg(literal: &ato_parser::Literal) -> ato_ir::TemplateArgValue {
+        match literal {
+            ato_parser::Literal::String(s) => {
+                let value = s.value.trim_matches('"').to_string();
+                ato_ir::TemplateArgValue::String(value)
+            }
+            ato_parser::Literal::Bool(b) => {
+                ato_ir::TemplateArgValue::Bool(b.value)
+            }
+            ato_parser::Literal::Physical(p) => {
+                match p {
+                    ato_parser::PhysicalLiteral::Quantity(q) => {
+                        if let Some(i) = q.number.value.parse::<i64>().ok() {
+                            if q.unit.is_none() {
+                                return ato_ir::TemplateArgValue::Int(i);
+                            }
+                        }
+                        if let Some(f) = q.number.value.parse::<f64>().ok() {
+                            if q.unit.is_none() {
+                                return ato_ir::TemplateArgValue::Float(f);
+                            }
+                        }
+                        let unit = q.unit.as_ref().map(|u| u.name.as_str()).unwrap_or("");
+                        ato_ir::TemplateArgValue::String(format!("{}{}", q.number.value, unit))
+                    }
+                    _ => ato_ir::TemplateArgValue::String("physical".to_string()),
+                }
+            }
+            ato_parser::Literal::Number(n) => {
+                if let Ok(i) = n.value.parse::<i64>() {
+                    ato_ir::TemplateArgValue::Int(i)
+                } else if let Ok(f) = n.value.parse::<f64>() {
+                    ato_ir::TemplateArgValue::Float(f)
+                } else {
+                    ato_ir::TemplateArgValue::String(n.value.clone())
+                }
             }
         }
     }

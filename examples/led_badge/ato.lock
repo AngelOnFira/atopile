@@ -3,13 +3,13 @@ version = 1
 [[packages]]
 identifier = "atopile/buttons"
 source = "registry"
-resolved = "0.3.1"
+resolved = "0.4.0"
 dependencies = []
 
 [[packages]]
 identifier = "atopile/ti-tlv75901"
 source = "registry"
-resolved = "0.3.1"
+resolved = "0.4.0"
 dependencies = []
 
 [[packages]]
@@ -33,7 +33,7 @@ dependencies = []
 [[packages]]
 identifier = "atopile/st-lsm6ds3"
 source = "registry"
-resolved = "0.1.2"
+resolved = "0.2.0"
 dependencies = []
 
 [[packages]]
@@ -57,17 +57,17 @@ dependencies = []
 [[packages]]
 identifier = "atopile/ti-bq25185"
 source = "registry"
-resolved = "0.1.2"
+resolved = "0.3.0"
 dependencies = []
 
 [[packages]]
 identifier = "atopile/batteries"
 source = "registry"
-resolved = "0.2.2"
+resolved = "0.2.3"
 dependencies = []
 
 [[packages]]
 identifier = "atopile/logos"
 source = "registry"
-resolved = "0.1.5"
+resolved = "0.2.0"
 dependencies = []
