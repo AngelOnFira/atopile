@@ -201,7 +201,7 @@ impl LibSymbol {
         }
 
         for unit in &self.units {
-            unit.write(writer, indent + 2)?;
+            unit.write(writer, indent + 2, &self.lib_id)?;
         }
 
         writeln!(writer, "{})", pad)?;
@@ -247,9 +247,15 @@ pub struct SymbolUnit {
 }
 
 impl SymbolUnit {
-    fn write<W: Write>(&self, writer: &mut W, indent: usize) -> Result<(), ExportError> {
+    fn write<W: Write>(&self, writer: &mut W, indent: usize, parent_lib_id: &str) -> Result<(), ExportError> {
         let pad = " ".repeat(indent);
-        writeln!(writer, "{}(symbol \"_{}_{}\")", pad, self.unit, 1)?;
+        writeln!(writer, "{}(symbol \"{}_{}_{}\""  , pad, escape_sexpr(parent_lib_id), self.unit, 1)?;
+
+        for pin in &self.pins {
+            pin.write(writer, indent + 2)?;
+        }
+
+        writeln!(writer, "{})", pad)?;
         Ok(())
     }
 }
@@ -271,6 +277,30 @@ pub struct SymbolPin {
     pub name: String,
     /// Pin number.
     pub number: String,
+}
+
+impl SymbolPin {
+    fn write<W: Write>(&self, writer: &mut W, indent: usize) -> Result<(), ExportError> {
+        let pad = " ".repeat(indent);
+        writeln!(
+            writer,
+            "{}(pin {} {} (at {} {} {}) (length {})",
+            pad, self.pin_type, self.style, self.position.0, self.position.1,
+            self.angle, self.length
+        )?;
+        writeln!(
+            writer,
+            "{}  (name \"{}\" (effects (font (size 1.27 1.27))))",
+            pad, escape_sexpr(&self.name)
+        )?;
+        writeln!(
+            writer,
+            "{}  (number \"{}\" (effects (font (size 1.27 1.27))))",
+            pad, escape_sexpr(&self.number)
+        )?;
+        writeln!(writer, "{})", pad)?;
+        Ok(())
+    }
 }
 
 /// A symbol instance in the schematic.
@@ -511,5 +541,107 @@ mod tests {
         assert_eq!(escape_sexpr("hello"), "hello");
         assert_eq!(escape_sexpr("hello\"world"), "hello\\\"world");
         assert_eq!(escape_sexpr("path\\to\\file"), "path\\\\to\\\\file");
+    }
+
+    #[test]
+    fn test_symbol_unit_write_includes_lib_id() {
+        // Test that SymbolUnit::write produces correct S-expression with parent lib_id
+        let unit = SymbolUnit {
+            unit: 1,
+            pins: vec![],
+        };
+
+        let mut buffer = Vec::new();
+        unit.write(&mut buffer, 4, "Device:R").unwrap();
+        let output = String::from_utf8(buffer).unwrap();
+
+        assert!(
+            output.contains("\"Device:R_1_1\""),
+            "Unit should reference parent lib_id, got: {}",
+            output
+        );
+        // Verify balanced parens
+        let open_count = output.chars().filter(|&c| c == '(').count();
+        let close_count = output.chars().filter(|&c| c == ')').count();
+        assert_eq!(
+            open_count, close_count,
+            "Parentheses should be balanced in: {}",
+            output
+        );
+    }
+
+    #[test]
+    fn test_symbol_unit_write_with_pins() {
+        let unit = SymbolUnit {
+            unit: 1,
+            pins: vec![
+                SymbolPin {
+                    pin_type: "passive".to_string(),
+                    style: "line".to_string(),
+                    position: (0.0, 2.54),
+                    angle: 270.0,
+                    length: 2.54,
+                    name: "1".to_string(),
+                    number: "1".to_string(),
+                },
+                SymbolPin {
+                    pin_type: "passive".to_string(),
+                    style: "line".to_string(),
+                    position: (0.0, -2.54),
+                    angle: 90.0,
+                    length: 2.54,
+                    name: "2".to_string(),
+                    number: "2".to_string(),
+                },
+            ],
+        };
+
+        let mut buffer = Vec::new();
+        unit.write(&mut buffer, 2, "Device:R").unwrap();
+        let output = String::from_utf8(buffer).unwrap();
+
+        assert!(output.contains("(pin passive line"), "Should contain pin definitions");
+        assert!(output.contains("(name \"1\""), "Should contain pin name");
+        assert!(output.contains("(number \"2\""), "Should contain pin number");
+
+        // Verify balanced parens
+        let open_count = output.chars().filter(|&c| c == '(').count();
+        let close_count = output.chars().filter(|&c| c == ')').count();
+        assert_eq!(
+            open_count, close_count,
+            "Parentheses should be balanced in: {}",
+            output
+        );
+    }
+
+    #[test]
+    fn test_lib_symbol_write_balanced_parens() {
+        // Test that LibSymbol::write produces balanced parentheses
+        let lib_sym = LibSymbol {
+            lib_id: "Device:R".to_string(),
+            properties: vec![SymbolProperty {
+                name: "Reference".to_string(),
+                value: "R".to_string(),
+                id: 0,
+                position: (0.0, 0.0),
+                hidden: false,
+            }],
+            units: vec![SymbolUnit {
+                unit: 1,
+                pins: vec![],
+            }],
+        };
+
+        let mut buffer = Vec::new();
+        lib_sym.write(&mut buffer, 2).unwrap();
+        let output = String::from_utf8(buffer).unwrap();
+
+        let open_count = output.chars().filter(|&c| c == '(').count();
+        let close_count = output.chars().filter(|&c| c == ')').count();
+        assert_eq!(
+            open_count, close_count,
+            "LibSymbol parentheses should be balanced in:\n{}",
+            output
+        );
     }
 }

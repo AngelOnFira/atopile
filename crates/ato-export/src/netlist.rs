@@ -401,6 +401,10 @@ impl<'a> NetlistBuilder<'a> {
                 if let Some(field_id) = module.get_field(param_name) {
                     if let Some(field) = self.design.get_field(field_id) {
                         if field.is_parameter() {
+                            // Check solved_values before falling back to placeholder
+                            if let Some(solved) = self.solved_values.get(*param_name) {
+                                return solved.clone();
+                            }
                             return format!("${}", param_name);
                         }
                     }
@@ -526,6 +530,13 @@ impl<'a> NetlistBuilder<'a> {
                 instance_name_to_ref.insert(field.name.clone(), ref_name.clone());
             }
         }
+        // Also add array instance entries with indexed names (e.g., "resistors[0]")
+        for (&(field_id, idx), ref_name) in &self.array_instance_to_ref {
+            if let Some(field) = self.design.get_field(field_id) {
+                let indexed_name = format!("{}[{}]", field.name, idx);
+                instance_name_to_ref.insert(indexed_name, ref_name.clone());
+            }
+        }
 
         // Connection-based net building
         let mut net_groups: HashMap<String, Vec<NetNode>> = HashMap::new();
@@ -643,6 +654,9 @@ impl<'a> NetlistBuilder<'a> {
     }
 
     /// Resolve a connection endpoint to a NetNode.
+    ///
+    /// Handles both simple instance paths (e.g., `r1.p1`) and array instance
+    /// paths (e.g., `resistors[0].p1`).
     fn resolve_endpoint_to_node(
         &self,
         endpoint: &ato_ir::ConnectionEndpoint,
@@ -654,21 +668,34 @@ impl<'a> NetlistBuilder<'a> {
                 return None;
             }
 
+            // Check module_to_ref first (for non-instance components)
             if let Some(ref_name) = self.module_to_ref.get(&field.parent) {
                 return Some(NetNode::new(ref_name.clone(), &field.name));
             }
 
+            // Try to resolve via endpoint path (for instance components)
             if let EndpointKind::FieldRef(path) = &endpoint.kind {
-                if let Some(first) = path.parts.first() {
-                    if let FieldPathPart::Name(instance_name) = first {
-                        if let Some(ref_name) = instance_name_to_ref.get(instance_name) {
-                            return Some(NetNode::new(ref_name.clone(), &field.name));
-                        }
-                    }
+                let instance_key = self.extract_instance_key_from_path(path);
+                if let Some(ref_name) = instance_name_to_ref.get(&instance_key) {
+                    return Some(NetNode::new(ref_name.clone(), &field.name));
                 }
             }
         }
         None
+    }
+
+    /// Extract an instance lookup key from a field path.
+    ///
+    /// For simple paths like `[Name("r1"), Name("p1")]`, returns `"r1"`.
+    /// For array paths like `[Name("resistors"), Index(0), Name("p1")]`, returns `"resistors[0]"`.
+    fn extract_instance_key_from_path(&self, path: &ato_ir::FieldPath) -> String {
+        match path.parts.as_slice() {
+            [FieldPathPart::Name(name), FieldPathPart::Index(idx), ..] => {
+                format!("{}[{}]", name, idx)
+            }
+            [FieldPathPart::Name(name), ..] => name.clone(),
+            _ => String::new(),
+        }
     }
 
     /// Generate a net name from connected fields.
@@ -1079,5 +1106,305 @@ mod tests {
         assert!(comp.footprint.is_some());
         assert!(comp.footprint.as_ref().unwrap().contains("R_0402_1005Metric"));
         assert_eq!(comp.properties.get("lcsc"), Some(&"C25076".to_string()));
+    }
+
+    #[test]
+    fn test_module_value_uses_solved_values() {
+        // Test that get_module_value uses solved_values instead of placeholders
+        let mut design = Design::new();
+
+        let resistor_id = design.create_module("Resistor", ModuleKind::Module);
+        design.add_field(resistor_id, "p1", FieldKind::pin("1"));
+        design.add_field(resistor_id, "p2", FieldKind::pin("2"));
+        design.add_field(
+            resistor_id,
+            "resistance",
+            FieldKind::parameter_with_unit("ohm"),
+        );
+
+        // Module without an instance (second pass picks it up)
+        let mut solved = HashMap::new();
+        solved.insert("resistance".to_string(), "4.7kohm".to_string());
+
+        let builder = NetlistBuilder::new(&design).with_solved_values(solved);
+        let netlist = builder.build().unwrap();
+
+        assert_eq!(netlist.component_count(), 1);
+        let comp = netlist.get_component("R1").unwrap();
+        assert_eq!(
+            comp.value, "4.7kohm",
+            "Module value should use solved_values, got: {}",
+            comp.value
+        );
+    }
+
+    #[test]
+    fn test_multiple_instances_same_type() {
+        // Test that multiple instances of the same type each get unique components
+        let mut design = Design::new();
+
+        let cap_id = design.create_module("Capacitor", ModuleKind::Module);
+        design.add_field(cap_id, "p1", FieldKind::pin("1"));
+        design.add_field(cap_id, "p2", FieldKind::pin("2"));
+        design.add_field(
+            cap_id,
+            "capacitance",
+            FieldKind::parameter_with_unit("F"),
+        );
+
+        let app_id = design.create_module("App", ModuleKind::Module);
+        for name in ["c1", "c2", "c3"] {
+            let kind = FieldKind::Instance {
+                type_ref: QualifiedName::simple("Capacitor"),
+                count: None,
+                resolved_type: Some(cap_id),
+            };
+            design.add_field(app_id, name, kind);
+        }
+
+        let builder = NetlistBuilder::new(&design);
+        let netlist = builder.build().unwrap();
+
+        assert_eq!(
+            netlist.component_count(),
+            3,
+            "Should have 3 separate capacitor components"
+        );
+        assert!(netlist.get_component("C1").is_some());
+        assert!(netlist.get_component("C2").is_some());
+        assert!(netlist.get_component("C3").is_some());
+    }
+
+    #[test]
+    fn test_mixed_component_types() {
+        // Test a design with multiple different component types
+        let mut design = Design::new();
+
+        let resistor_id = design.create_module("Resistor", ModuleKind::Module);
+        design.add_field(resistor_id, "p1", FieldKind::pin("1"));
+        design.add_field(resistor_id, "p2", FieldKind::pin("2"));
+
+        let cap_id = design.create_module("Capacitor", ModuleKind::Module);
+        design.add_field(cap_id, "p1", FieldKind::pin("1"));
+        design.add_field(cap_id, "p2", FieldKind::pin("2"));
+
+        let led_id = design.create_module("LED", ModuleKind::Module);
+        design.add_field(led_id, "anode", FieldKind::pin("1"));
+        design.add_field(led_id, "cathode", FieldKind::pin("2"));
+
+        let app_id = design.create_module("App", ModuleKind::Module);
+        design.add_field(
+            app_id,
+            "r1",
+            FieldKind::Instance {
+                type_ref: QualifiedName::simple("Resistor"),
+                count: None,
+                resolved_type: Some(resistor_id),
+            },
+        );
+        design.add_field(
+            app_id,
+            "c1",
+            FieldKind::Instance {
+                type_ref: QualifiedName::simple("Capacitor"),
+                count: None,
+                resolved_type: Some(cap_id),
+            },
+        );
+        design.add_field(
+            app_id,
+            "led1",
+            FieldKind::Instance {
+                type_ref: QualifiedName::simple("LED"),
+                count: None,
+                resolved_type: Some(led_id),
+            },
+        );
+
+        let builder = NetlistBuilder::new(&design);
+        let netlist = builder.build().unwrap();
+
+        assert_eq!(netlist.component_count(), 3);
+        // R1 for Resistor, C1 for Capacitor, D1 for LED (name heuristic)
+        assert!(
+            netlist.get_component("R1").is_some(),
+            "Expected R1, got: {:?}",
+            netlist.components.iter().map(|c| &c.reference).collect::<Vec<_>>()
+        );
+        assert!(netlist.get_component("C1").is_some());
+        assert!(netlist.get_component("D1").is_some());
+    }
+
+    #[test]
+    fn test_array_instance_with_connections() {
+        // Test that array instances can be resolved in connections
+        let mut design = Design::new();
+
+        let resistor_id = design.create_module("Resistor", ModuleKind::Module);
+        let p1_id = design.add_field(resistor_id, "p1", FieldKind::pin("1"));
+        let p2_id = design.add_field(resistor_id, "p2", FieldKind::pin("2"));
+
+        let app_id = design.create_module("App", ModuleKind::Module);
+        let _arr_id = design.add_field(
+            app_id,
+            "resistors",
+            FieldKind::Instance {
+                type_ref: QualifiedName::simple("Resistor"),
+                count: Some(2),
+                resolved_type: Some(resistor_id),
+            },
+        );
+
+        // Connect resistors[0].p2 ~ resistors[1].p1
+        let mut ep1 = ConnectionEndpoint::field(FieldPath::new(vec![
+            FieldPathPart::Name("resistors".to_string()),
+            FieldPathPart::Index(0),
+            FieldPathPart::Name("p2".to_string()),
+        ]));
+        ep1.resolved = Some(p2_id);
+
+        let mut ep2 = ConnectionEndpoint::field(FieldPath::new(vec![
+            FieldPathPart::Name("resistors".to_string()),
+            FieldPathPart::Index(1),
+            FieldPathPart::Name("p1".to_string()),
+        ]));
+        ep2.resolved = Some(p1_id);
+
+        design.add_connection(app_id, ep1, ep2);
+        design.rebuild_connection_graph();
+
+        let builder = NetlistBuilder::new(&design);
+        let netlist = builder.build().unwrap();
+
+        assert_eq!(netlist.component_count(), 2);
+
+        // Check that the connection was resolved
+        let has_connection = netlist.nets.iter().any(|net| {
+            let has_r1_p2 = net.nodes.iter().any(|n| n.component == "R1" && n.pin == "p2");
+            let has_r2_p1 = net.nodes.iter().any(|n| n.component == "R2" && n.pin == "p1");
+            has_r1_p2 && has_r2_p1
+        });
+
+        assert!(
+            has_connection,
+            "Should have a net connecting R1.p2 to R2.p1 (array instances), got nets: {:?}",
+            netlist.nets
+        );
+    }
+
+    #[test]
+    fn test_instance_solved_values_per_instance() {
+        // Test that different instances can have different solved values
+        let mut design = Design::new();
+
+        let resistor_id = design.create_module("Resistor", ModuleKind::Module);
+        design.add_field(resistor_id, "p1", FieldKind::pin("1"));
+        design.add_field(resistor_id, "p2", FieldKind::pin("2"));
+        design.add_field(
+            resistor_id,
+            "resistance",
+            FieldKind::parameter_with_unit("ohm"),
+        );
+
+        let app_id = design.create_module("App", ModuleKind::Module);
+        design.add_field(
+            app_id,
+            "r1",
+            FieldKind::Instance {
+                type_ref: QualifiedName::simple("Resistor"),
+                count: None,
+                resolved_type: Some(resistor_id),
+            },
+        );
+        design.add_field(
+            app_id,
+            "r2",
+            FieldKind::Instance {
+                type_ref: QualifiedName::simple("Resistor"),
+                count: None,
+                resolved_type: Some(resistor_id),
+            },
+        );
+
+        let mut solved = HashMap::new();
+        solved.insert("r1.resistance".to_string(), "10kohm".to_string());
+        solved.insert("r2.resistance".to_string(), "47kohm".to_string());
+
+        let builder = NetlistBuilder::new(&design).with_solved_values(solved);
+        let netlist = builder.build().unwrap();
+
+        assert_eq!(netlist.component_count(), 2);
+
+        let r1 = netlist.get_component("R1").unwrap();
+        let r2 = netlist.get_component("R2").unwrap();
+
+        assert_eq!(r1.value, "10kohm", "R1 should have its own solved value");
+        assert_eq!(r2.value, "47kohm", "R2 should have its own solved value");
+    }
+
+    #[test]
+    fn test_footprint_from_explicit_field() {
+        // Test that explicit footprint field is used when available
+        let mut design = Design::new();
+
+        let ic_id = design.create_module("MyIC", ModuleKind::Module);
+        design.add_field(ic_id, "p1", FieldKind::pin("1"));
+        design.add_field(ic_id, "p2", FieldKind::pin("2"));
+        design.add_field(ic_id, "footprint", FieldKind::parameter());
+
+        let app_id = design.create_module("App", ModuleKind::Module);
+        design.add_field(
+            app_id,
+            "u1",
+            FieldKind::Instance {
+                type_ref: QualifiedName::simple("MyIC"),
+                count: None,
+                resolved_type: Some(ic_id),
+            },
+        );
+
+        let mut solved = HashMap::new();
+        solved.insert(
+            "footprint".to_string(),
+            "Package_QFP:LQFP-48_7x7mm_P0.5mm".to_string(),
+        );
+
+        let builder = NetlistBuilder::new(&design).with_solved_values(solved);
+        let netlist = builder.build().unwrap();
+
+        let comp = netlist.get_component("U1").unwrap();
+        assert_eq!(
+            comp.footprint.as_deref(),
+            Some("Package_QFP:LQFP-48_7x7mm_P0.5mm"),
+            "Should use explicit footprint from solved_values"
+        );
+    }
+
+    #[test]
+    fn test_empty_design_produces_empty_netlist() {
+        let design = Design::new();
+        let builder = NetlistBuilder::new(&design);
+        let netlist = builder.build().unwrap();
+
+        assert_eq!(netlist.component_count(), 0);
+        assert_eq!(netlist.net_count(), 0);
+    }
+
+    #[test]
+    fn test_interface_modules_are_not_components() {
+        // Interfaces should never become components
+        let mut design = Design::new();
+
+        let iface_id = design.create_module("Electrical", ModuleKind::Interface);
+        design.add_field(iface_id, "line", FieldKind::pin("1"));
+
+        let builder = NetlistBuilder::new(&design);
+        let netlist = builder.build().unwrap();
+
+        assert_eq!(
+            netlist.component_count(),
+            0,
+            "Interface modules should not become components"
+        );
     }
 }
