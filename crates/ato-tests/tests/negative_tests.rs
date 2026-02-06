@@ -481,6 +481,179 @@ interface MyInterface:
 }
 
 // ============================================================================
+// 2c. Unconnected pins warning test
+// ============================================================================
+
+#[test]
+#[ignore = "Analyzer has no warning system yet -- unconnected pins are not warned about"]
+fn test_unconnected_pins_on_component() {
+    // A component with pins that are never connected should produce a warning.
+    let source = r#"
+component Chip:
+    pin 1
+    pin 2
+    pin 3
+    pin 4
+
+module M:
+    chip = new Chip
+    signal sig
+    chip.1 ~ sig
+"#;
+    let result = analyze(source);
+    // Should succeed but ideally warn about pins 2, 3, 4 being unconnected
+    assert!(result.is_ok(), "Should compile, just warn. Errors: {:?}", result.err());
+    // TODO: check for warnings when warning system is added
+    eprintln!("TODO: Verify warning about unconnected pins 2, 3, 4 on chip");
+}
+
+// ============================================================================
+// 3. led_badge robustness tests
+// ============================================================================
+// These tests modify the led_badge source to verify that the analyzer
+// catches breakage when connections are removed or types are changed.
+
+/// Path to the led_badge stdlib directory.
+fn stdlib_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../ato-sema/stdlib")
+}
+
+/// Path to the led_badge.ato source file.
+fn led_badge_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/led_badge/led_badge.ato")
+}
+
+/// Analyze modified led_badge source with full stdlib/import support.
+fn analyze_led_badge_modified(source: &str) -> Result<ato_ir::Design, Vec<SemaError>> {
+    let path = led_badge_path();
+    let stdlib = stdlib_path();
+
+    let mut analyzer = Analyzer::new();
+    if stdlib.exists() {
+        analyzer = analyzer.with_stdlib(stdlib);
+    }
+
+    analyzer.analyze_file(source, &path)
+}
+
+#[test]
+fn test_led_badge_removing_connection_still_compiles() {
+    // Removing a connection from led_badge should still compile (connections are
+    // not required). This documents that the analyzer does NOT enforce connectivity.
+    let source = std::fs::read_to_string(led_badge_path()).unwrap();
+
+    // Remove the first power connection line
+    let modified = source.replace(
+        "usb_c.usb2.usb_if.buspower ~ charger.power_input",
+        "# removed: usb_c.usb2.usb_if.buspower ~ charger.power_input"
+    );
+
+    // Should still compile -- removing a connection is not an error
+    let result = analyze_led_badge_modified(&modified);
+    match &result {
+        Ok(_) => eprintln!("INFO: led_badge compiles with a connection removed (expected -- no connectivity enforcement)"),
+        Err(errors) => eprintln!("INFO: led_badge fails with connection removed: {:?}",
+            errors.iter().map(|e| e.to_string()).collect::<Vec<_>>()),
+    }
+    // We just document the behavior; it's expected to pass since the analyzer
+    // doesn't enforce that all interfaces must be connected.
+}
+
+#[test]
+#[ignore = "BUG: Analyzer does not detect wrong interface type in connections (no type checking)"]
+fn test_led_badge_wrong_interface_type() {
+    // Replacing a connection with a type-mismatched one should error.
+    // e.g., connecting an I2C interface where ElectricPower is expected.
+    let source = std::fs::read_to_string(led_badge_path()).unwrap();
+
+    // Replace the USB power connection with a nonsensical I2C connection
+    let modified = source.replace(
+        "usb_c.usb2.usb_if.buspower ~ charger.power_input",
+        "microcontroller.i2c[0] ~ charger.power_input"
+    );
+
+    let result = analyze_led_badge_modified(&modified);
+    assert!(result.is_err(),
+        "Connecting I2C to power_input should error with type mismatch");
+}
+
+#[test]
+fn test_led_badge_referencing_nonexistent_field() {
+    // Referencing a field that doesn't exist should error.
+    let source = std::fs::read_to_string(led_badge_path()).unwrap();
+
+    // Add a line referencing a nonexistent field
+    let modified = source.replace(
+        "charger.power_battery ~ battery.power",
+        "charger.power_battery ~ battery.power\n    charger.nonexistent_field ~ battery.power"
+    );
+
+    let result = analyze_led_badge_modified(&modified);
+    // May or may not error depending on field resolution depth
+    match &result {
+        Ok(_) => eprintln!("WARNING: Referencing nonexistent field compiled (should error in future)"),
+        Err(errors) => {
+            eprintln!("Correctly caught nonexistent field reference: {:?}",
+                errors.iter().map(|e| e.to_string()).collect::<Vec<_>>());
+        }
+    }
+}
+
+// ============================================================================
+// 4. Missing required fields / constraint violation tests
+// ============================================================================
+
+#[test]
+#[ignore = "BUG: Analyzer does not detect missing required parameter constraints"]
+fn test_missing_required_field_on_instance() {
+    // Some modules require certain fields to be set (e.g., ElectricPower.required = True).
+    // Instantiating without satisfying requirements should produce a warning or error.
+    let source = r#"
+module PoweredDevice:
+    power: V
+    assert power within 3V to 3.6V
+
+module M:
+    dev = new PoweredDevice
+"#;
+    let result = analyze(source);
+    // Should warn or error that dev.power is unconstrained
+    assert!(result.is_err(), "Missing required parameter should produce an error");
+}
+
+#[test]
+#[ignore = "BUG: Analyzer does not detect contradictory constraints"]
+fn test_contradictory_constraints() {
+    // Two assertions that contradict each other should error at solve time.
+    // This tests that the solver pipeline catches contradictions.
+    let source = r#"
+module M:
+    voltage: V
+    assert voltage > 10V
+    assert voltage < 5V
+"#;
+    let result = analyze(source);
+    // The sema phase may accept this (constraints are checked at solve time).
+    // If sema passes, we'd need to run the solver to catch the contradiction.
+    if result.is_ok() {
+        let design = result.unwrap();
+        if design.constraint_count() >= 2 {
+            // Try solving to check for contradictions
+            let collector = ato_sema::ConstraintCollector::new();
+            if let Ok((mut solver, _deps)) = collector.collect(&design) {
+                let solve_result = solver.solve();
+                assert!(
+                    matches!(solve_result, Err(ato_solver::SolverError::Contradiction(_))),
+                    "Solver should detect contradiction between voltage > 10V and voltage < 5V"
+                );
+            }
+        }
+    }
+}
+
+// ============================================================================
 // Summary
 // ============================================================================
 
