@@ -56,6 +56,10 @@ enum Commands {
         /// Show verbose output.
         #[arg(short, long)]
         verbose: bool,
+
+        /// Skip automatic package installation.
+        #[arg(long)]
+        no_install: bool,
     },
 
     /// Search and query the parts database.
@@ -149,8 +153,8 @@ fn main() -> ExitCode {
     let result = match cli.command {
         Commands::Parse { file, format } => commands::parse::run(&file, &format),
         Commands::Check { file, verbose } => commands::check::run(&file, verbose),
-        Commands::Build { target, output, verbose } => {
-            commands::build::run(target.as_deref(), output.as_deref(), verbose)
+        Commands::Build { target, output, verbose, no_install } => {
+            commands::build::run_with_options(target.as_deref(), output.as_deref(), verbose, no_install)
         }
         Commands::Parts { action } => match action {
             PartsAction::Search {

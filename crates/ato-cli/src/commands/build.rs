@@ -216,7 +216,20 @@ fn resolve_target(target: Option<&str>) -> CliResult<BuildTarget> {
 /// - A .ato file path
 /// - A build target name from ato.yaml
 /// - An entry point like "file.ato:ModuleName"
+#[cfg(test)]
 pub fn run(target: Option<&str>, output: Option<&Path>, verbose: bool) -> CliResult<()> {
+    run_with_options(target, output, verbose, false)
+}
+
+/// Run the build command with full options.
+///
+/// When `no_install` is true, skip the automatic package installation step.
+pub fn run_with_options(
+    target: Option<&str>,
+    output: Option<&Path>,
+    verbose: bool,
+    no_install: bool,
+) -> CliResult<()> {
     // Resolve the build target
     let build_target = resolve_target(target)?;
     let path = &build_target.file_path;
@@ -227,6 +240,13 @@ pub fn run(target: Option<&str>, output: Option<&Path>, verbose: bool) -> CliRes
             "Expected .ato file, got '{}'",
             path.display()
         )));
+    }
+
+    // Auto-install packages if needed (before reading files / semantic analysis)
+    if !no_install {
+        if let Some(ref project_root) = build_target.project_root {
+            super::package::ensure_packages_installed(project_root)?;
+        }
     }
 
     // Read the file

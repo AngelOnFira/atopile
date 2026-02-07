@@ -111,6 +111,55 @@ pub fn list(project_path: Option<&Path>) -> CliResult<()> {
     Ok(())
 }
 
+/// Ensure all packages are installed before building.
+///
+/// This is the "auto-install" entry point called by `ato build`.
+/// It is a no-op when:
+/// - There are no dependencies in ato.yaml
+/// - All declared dependencies already exist in .ato/modules/
+///
+/// If packages are missing, runs the full install process.
+/// Errors are reported with a suggestion to run `ato install` manually.
+pub fn ensure_packages_installed(project_root: &Path) -> CliResult<()> {
+    let config = ato_sema::AtoConfig::load(project_root)
+        .map_err(|e| CliError::io(format!("failed to load ato.yaml: {}", e)))?;
+
+    if config.dependencies.is_empty() {
+        return Ok(());
+    }
+
+    // Fast path: check if all dependencies are already present in .ato/modules/
+    let modules_dir = project_root.join(".ato/modules");
+    let all_present = modules_dir.exists() && config.dependencies.iter().all(|dep| {
+        let id = dep.identifier();
+        // The identifier is like "atopile/generics"; the symlink in .ato/modules/
+        // is created as .ato/modules/<identifier> (with the slash becoming a dir).
+        modules_dir.join(&id).exists()
+    });
+
+    if all_present {
+        return Ok(());
+    }
+
+    // Some packages are missing — run install
+    eprintln!(
+        "{} Some dependencies are missing, installing...",
+        console::style("!").yellow()
+    );
+
+    let mut manager = PackageManager::new(project_root.to_path_buf())
+        .map_err(|e| CliError::io(format!("failed to initialize package manager: {}", e)))?;
+
+    manager.install().map_err(|e| {
+        CliError::io(format!(
+            "auto-install failed: {}\n\nTry running `ato install` manually.",
+            e
+        ))
+    })?;
+
+    Ok(())
+}
+
 /// Find the project root directory.
 fn find_project_root(project_path: Option<&Path>) -> CliResult<std::path::PathBuf> {
     if let Some(path) = project_path {
@@ -170,5 +219,46 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let result = find_project_root(Some(temp.path()));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_ensure_packages_installed_no_deps() {
+        let temp = TempDir::new().unwrap();
+        let project_dir = temp.path();
+
+        // Create ato.yaml with no dependencies
+        fs::write(
+            project_dir.join("ato.yaml"),
+            "requires-atopile: '^0.9.0'\n",
+        )
+        .unwrap();
+
+        // Should succeed immediately (no-op)
+        let result = ensure_packages_installed(project_dir);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_ensure_packages_installed_all_present() {
+        let temp = TempDir::new().unwrap();
+        let project_dir = temp.path();
+
+        // Create ato.yaml with a registry dependency
+        fs::write(
+            project_dir.join("ato.yaml"),
+            "requires-atopile: '^0.9.0'\n\
+             dependencies:\n\
+             - type: registry\n  \
+               identifier: atopile/generics\n",
+        )
+        .unwrap();
+
+        // Create .ato/modules/atopile/generics to simulate installed package
+        let modules_dir = project_dir.join(".ato/modules/atopile/generics");
+        fs::create_dir_all(&modules_dir).unwrap();
+
+        // Should succeed (fast path: all present)
+        let result = ensure_packages_installed(project_dir);
+        assert!(result.is_ok());
     }
 }
