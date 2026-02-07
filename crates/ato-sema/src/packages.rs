@@ -1418,7 +1418,7 @@ impl PackageManager {
     /// Save the configuration back to ato.yaml.
     fn save_config(&self) -> Result<(), SemaError> {
         let yaml_path = self.project_root.join("ato.yaml");
-        let content = serde_yaml::to_string(&self.config).map_err(|e| SemaError::IoError {
+        let content = serde_yml::to_string(&self.config).map_err(|e| SemaError::IoError {
             message: format!("failed to serialize config: {}", e),
         })?;
 
@@ -1467,7 +1467,7 @@ impl AtoConfig {
             message: format!("failed to read ato.yaml: {}", e),
         })?;
 
-        serde_yaml::from_str(&content).map_err(|e| SemaError::IoError {
+        serde_yml::from_str(&content).map_err(|e| SemaError::IoError {
             message: format!("failed to parse ato.yaml: {}", e),
         })
     }
@@ -1561,7 +1561,7 @@ dependencies:
     git_ref: main
 "#;
 
-        let config: AtoConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: AtoConfig = serde_yml::from_str(yaml).unwrap();
         assert_eq!(config.requires_atopile, Some("^0.9.0".to_string()));
         assert_eq!(config.paths.src, PathBuf::from("."));
         assert_eq!(config.dependencies.len(), 2);

@@ -115,7 +115,7 @@ impl<'a> KicadNetlistExporter<'a> {
             writeln!(writer, "      )")?;
         }
 
-        writeln!(writer, "      (tstamps \"{}\")", tstamp)?;
+        writeln!(writer, "      (tstamps {})", tstamp)?;
         writeln!(writer, "    )")?;
 
         Ok(())
@@ -142,7 +142,7 @@ impl<'a> KicadNetlistExporter<'a> {
     ) -> Result<(), ExportError> {
         writeln!(
             writer,
-            "    (net (code \"{}\") (name \"{}\")",
+            "    (net (code {}) (name \"{}\")",
             code,
             escape_string(&net.name)
         )?;
@@ -352,7 +352,7 @@ mod tests {
         assert!(output.contains("(comp (ref \"R1\")"));
         assert!(output.contains("(value \"10k\")"));
         assert!(output.contains("(nets"));
-        assert!(output.contains("(net (code \"1\") (name \"VCC\")"));
+        assert!(output.contains("(net (code 1) (name \"VCC\")"));
         assert!(output.contains("(node (ref \"U1\") (pin \"VCC\")"));
     }
 

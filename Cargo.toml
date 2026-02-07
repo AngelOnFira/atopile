@@ -24,7 +24,7 @@ reqwest = { version = "0.12", features = ["blocking", "json"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 directories = "5"
 chrono = { version = "0.4", features = ["serde"] }
-serde_yaml = "0.9"
+serde_yml = "0.0.12"
 semver = { version = "1", features = ["serde"] }
 git2 = "0.20"
 sha2 = "0.10"
