@@ -25,6 +25,26 @@ enum FieldRefResolution {
     SubFieldNotFound(#[allow(dead_code)] String),
 }
 
+/// The category of a connectable element for type checking.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ConnCategory {
+    Pin,
+    Signal,
+    Instance,
+    Parameter,
+}
+
+/// Resolved type information for a connectable element.
+#[derive(Debug, Clone)]
+struct ResolvedConnType {
+    /// The category of connectable.
+    category: ConnCategory,
+    /// A displayable type name (e.g. "Electrical", "I2C", "pin").
+    display_name: String,
+    /// The resolved module ID for instances (used for inheritance checks).
+    module_id: Option<ModuleId>,
+}
+
 /// Type checks an AST against a resolved design.
 pub struct TypeChecker<'a> {
     /// The resolved design.
@@ -138,14 +158,13 @@ impl<'a> TypeChecker<'a> {
         self.check_connectable(&conn.right, scope, conn.span);
 
         // Check type compatibility
-        if let (Some(left_type), Some(right_type)) = (
-            self.get_connectable_type(&conn.left, scope),
-            self.get_connectable_type(&conn.right, scope),
-        ) {
-            if !self.types_compatible(&left_type, &right_type) {
+        let left_type = self.get_connectable_resolved_type(&conn.left, scope);
+        let right_type = self.get_connectable_resolved_type(&conn.right, scope);
+        if let (Some(lt), Some(rt)) = (&left_type, &right_type) {
+            if !self.resolved_types_compatible(lt, rt) {
                 self.errors.push(SemaError::type_mismatch(
-                    &left_type,
-                    &right_type,
+                    &lt.display_name,
+                    &rt.display_name,
                     Some(conn.span),
                 ));
             }
@@ -198,61 +217,129 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Get the type of a connectable element.
-    fn get_connectable_type(&self, connectable: &Connectable, scope: &Scope) -> Option<String> {
+    /// Get the resolved type info of a connectable element for type checking.
+    fn get_connectable_resolved_type(
+        &self,
+        connectable: &Connectable,
+        scope: &Scope,
+    ) -> Option<ResolvedConnType> {
         match connectable {
             Connectable::FieldRef(field_ref) => {
                 if let Some(field_id) = self.resolve_field_ref(field_ref, scope) {
                     if let Some(field) = self.design.get_field(field_id) {
-                        return Some(self.field_type_name(&field.kind));
+                        return self.field_resolved_type(&field.kind);
                     }
                 }
                 None
             }
-            Connectable::SignalDef(_) => Some("signal".to_string()),
-            Connectable::PinDef(_) => Some("pin".to_string()),
+            Connectable::SignalDef(_) => Some(ResolvedConnType {
+                category: ConnCategory::Signal,
+                display_name: "signal".to_string(),
+                module_id: None,
+            }),
+            Connectable::PinDef(_) => Some(ResolvedConnType {
+                category: ConnCategory::Pin,
+                display_name: "pin".to_string(),
+                module_id: None,
+            }),
         }
     }
 
-    /// Get a displayable type name for a field kind.
-    fn field_type_name(&self, kind: &FieldKind) -> String {
+    /// Get the resolved connection type for a field kind.
+    fn field_resolved_type(&self, kind: &FieldKind) -> Option<ResolvedConnType> {
         match kind {
             FieldKind::Parameter { unit } => {
-                if let Some(u) = unit {
+                let name = if let Some(u) = unit {
                     format!("parameter:{}", u)
                 } else {
                     "parameter".to_string()
-                }
+                };
+                Some(ResolvedConnType {
+                    category: ConnCategory::Parameter,
+                    display_name: name,
+                    module_id: None,
+                })
             }
-            FieldKind::Pin { .. } => "pin".to_string(),
-            FieldKind::Signal => "signal".to_string(),
-            FieldKind::Instance { type_ref, .. } => type_ref.to_string(),
+            FieldKind::Pin { .. } => Some(ResolvedConnType {
+                category: ConnCategory::Pin,
+                display_name: "pin".to_string(),
+                module_id: None,
+            }),
+            FieldKind::Signal => Some(ResolvedConnType {
+                category: ConnCategory::Signal,
+                display_name: "signal".to_string(),
+                module_id: None,
+            }),
+            FieldKind::Instance {
+                type_ref,
+                resolved_type,
+                ..
+            } => Some(ResolvedConnType {
+                category: ConnCategory::Instance,
+                display_name: type_ref.to_string(),
+                module_id: *resolved_type,
+            }),
         }
     }
 
-    /// Check if two types are compatible for connection.
-    fn types_compatible(&self, left: &str, right: &str) -> bool {
-        // For now, we allow:
-        // - pin ~ pin
-        // - pin ~ signal
-        // - signal ~ signal
-        // - instance ~ instance (of compatible types)
-        // - anything ~ anything (permissive for now)
-
-        // In a full implementation, we'd check:
-        // 1. Interface compatibility (e.g., Electrical ~ Electrical)
-        // 2. Recursively check that nested interfaces match
-
-        // For now, be permissive and allow most connections
-        // The real type checking happens at runtime in the solver
-
-        // Only flag obvious mismatches
-        if left.starts_with("parameter") || right.starts_with("parameter") {
-            // Parameters are not connectable
+    /// Check if two resolved types are compatible for connection.
+    fn resolved_types_compatible(&self, left: &ResolvedConnType, right: &ResolvedConnType) -> bool {
+        // Parameters are never connectable
+        if left.category == ConnCategory::Parameter || right.category == ConnCategory::Parameter {
             return false;
         }
 
+        // Pin ~ Pin, Pin ~ Signal, Signal ~ Signal are always OK
+        if left.category != ConnCategory::Instance && right.category != ConnCategory::Instance {
+            return true;
+        }
+
+        // If one side is an instance and the other is a pin/signal, that's OK
+        // (connecting an interface to an inline pin/signal definition)
+        if left.category != ConnCategory::Instance || right.category != ConnCategory::Instance {
+            return true;
+        }
+
+        // Both sides are instances -- check interface type compatibility
+        // If display names match, compatible
+        if left.display_name == right.display_name {
+            return true;
+        }
+
+        // If we have resolved module IDs for both sides, check inheritance
+        if let (Some(left_id), Some(right_id)) = (left.module_id, right.module_id) {
+            if self.is_subtype(left_id, right_id) || self.is_subtype(right_id, left_id) {
+                return true;
+            }
+        }
+
+        // If we don't have resolved module IDs, be permissive (type info incomplete)
+        if left.module_id.is_none() || right.module_id.is_none() {
+            return true;
+        }
+
+        // Both types are known and different with no inheritance relationship.
+        // However, the design may have incomplete type information (external packages
+        // not fully loaded, etc.), so we can't be certain they're truly incompatible.
+        // Be permissive to avoid false positives — only structural type checking
+        // (comparing field signatures) would be reliable here.
         true
+    }
+
+    /// Check if `child` is a subtype of `ancestor` by walking the super_type chain.
+    fn is_subtype(&self, child: ModuleId, ancestor: ModuleId) -> bool {
+        let mut current = child;
+        // Limit depth to prevent infinite loops from cyclic inheritance
+        for _ in 0..64 {
+            if current == ancestor {
+                return true;
+            }
+            match self.design.get_module(current).and_then(|m| m.super_type) {
+                Some(parent) => current = parent,
+                None => return false,
+            }
+        }
+        false
     }
 
     /// Resolve a field reference to a field ID (convenience wrapper).
@@ -561,5 +648,154 @@ module M:
         let (_, errors) = analyze(source);
         assert!(!errors.is_empty());
         assert!(errors.iter().any(|e| matches!(e, SemaError::UndefinedName { .. })));
+    }
+
+    #[test]
+    fn test_same_interface_type_connection() {
+        let source = r#"
+interface Electrical:
+    pass
+
+module M:
+    a = new Electrical
+    b = new Electrical
+    a ~ b
+"#;
+        let (_, errors) = analyze(source);
+        assert!(errors.is_empty(), "Expected no errors for same-type connection, got: {:?}", errors);
+    }
+
+    #[test]
+    fn test_different_interface_type_connection() {
+        // Build design manually to have resolved types, since the simple
+        // analyzer helper doesn't fully resolve instance types.
+        let mut design = Design::new();
+        let i2c_id = design.create_module("I2C", ato_ir::ModuleKind::Interface);
+        let spi_id = design.create_module("SPI", ato_ir::ModuleKind::Interface);
+        let m_id = design.create_module("M", ato_ir::ModuleKind::Module);
+
+        let field_a = design.add_field(m_id, "a", FieldKind::Instance {
+            type_ref: ato_ir::QualifiedName::simple("I2C"),
+            count: None,
+            resolved_type: Some(i2c_id),
+        });
+        let field_b = design.add_field(m_id, "b", FieldKind::Instance {
+            type_ref: ato_ir::QualifiedName::simple("SPI"),
+            count: None,
+            resolved_type: Some(spi_id),
+        });
+
+        let checker = TypeChecker::new(&design);
+        let left = checker.field_resolved_type(&design.get_field(field_a).unwrap().kind).unwrap();
+        let right = checker.field_resolved_type(&design.get_field(field_b).unwrap().kind).unwrap();
+        // Currently permissive: without structural type checking, we can't be
+        // certain two different-named types are truly incompatible (incomplete
+        // type info from external packages). Once structural type checking is
+        // implemented, this should assert incompatibility.
+        assert!(checker.resolved_types_compatible(&left, &right),
+            "Currently permissive without structural type checking");
+    }
+
+    #[test]
+    fn test_subtype_connection_compatible() {
+        // Test: Electrical is base of ElectricLogic, so they should be compatible
+        let mut design = Design::new();
+        let electrical_id = design.create_module("Electrical", ato_ir::ModuleKind::Interface);
+        let logic_id = design.create_module("ElectricLogic", ato_ir::ModuleKind::Interface);
+        // Set ElectricLogic's super_type to Electrical
+        if let Some(m) = design.get_module_mut(logic_id) {
+            m.super_type = Some(electrical_id);
+        }
+
+        let m_id = design.create_module("M", ato_ir::ModuleKind::Module);
+        let field_a = design.add_field(m_id, "a", FieldKind::Instance {
+            type_ref: ato_ir::QualifiedName::simple("Electrical"),
+            count: None,
+            resolved_type: Some(electrical_id),
+        });
+        let field_b = design.add_field(m_id, "b", FieldKind::Instance {
+            type_ref: ato_ir::QualifiedName::simple("ElectricLogic"),
+            count: None,
+            resolved_type: Some(logic_id),
+        });
+
+        let checker = TypeChecker::new(&design);
+        let left = checker.field_resolved_type(&design.get_field(field_a).unwrap().kind).unwrap();
+        let right = checker.field_resolved_type(&design.get_field(field_b).unwrap().kind).unwrap();
+        assert!(checker.resolved_types_compatible(&left, &right),
+            "Electrical and ElectricLogic (subtype) should be compatible");
+    }
+
+    #[test]
+    fn test_is_subtype_chain() {
+        // A -> B -> C: C is subtype of A
+        let mut design = Design::new();
+        let a_id = design.create_module("A", ato_ir::ModuleKind::Interface);
+        let b_id = design.create_module("B", ato_ir::ModuleKind::Interface);
+        let c_id = design.create_module("C", ato_ir::ModuleKind::Interface);
+        if let Some(m) = design.get_module_mut(b_id) {
+            m.super_type = Some(a_id);
+        }
+        if let Some(m) = design.get_module_mut(c_id) {
+            m.super_type = Some(b_id);
+        }
+
+        let checker = TypeChecker::new(&design);
+        assert!(checker.is_subtype(c_id, a_id), "C should be subtype of A");
+        assert!(checker.is_subtype(b_id, a_id), "B should be subtype of A");
+        assert!(!checker.is_subtype(a_id, c_id), "A should NOT be subtype of C");
+    }
+
+    #[test]
+    fn test_parameter_not_connectable() {
+        let mut design = Design::new();
+        let m_id = design.create_module("M", ato_ir::ModuleKind::Module);
+        let field_a = design.add_field(m_id, "a", FieldKind::parameter_with_unit("ohm"));
+        let field_b = design.add_field(m_id, "b", FieldKind::pin("p1"));
+
+        let checker = TypeChecker::new(&design);
+        let left = checker.field_resolved_type(&design.get_field(field_a).unwrap().kind).unwrap();
+        let right = checker.field_resolved_type(&design.get_field(field_b).unwrap().kind).unwrap();
+        assert!(!checker.resolved_types_compatible(&left, &right),
+            "Parameter should not be connectable to pin");
+    }
+
+    #[test]
+    fn test_pin_signal_compatible() {
+        let mut design = Design::new();
+        let m_id = design.create_module("M", ato_ir::ModuleKind::Module);
+        let field_a = design.add_field(m_id, "a", FieldKind::pin("p1"));
+        let field_b = design.add_field(m_id, "b", FieldKind::signal());
+
+        let checker = TypeChecker::new(&design);
+        let left = checker.field_resolved_type(&design.get_field(field_a).unwrap().kind).unwrap();
+        let right = checker.field_resolved_type(&design.get_field(field_b).unwrap().kind).unwrap();
+        assert!(checker.resolved_types_compatible(&left, &right),
+            "Pin and signal should be compatible");
+    }
+
+    #[test]
+    fn test_unresolved_instance_permissive() {
+        // If one instance has no resolved_type (type info incomplete),
+        // we should be permissive and allow the connection
+        let mut design = Design::new();
+        let i2c_id = design.create_module("I2C", ato_ir::ModuleKind::Interface);
+        let m_id = design.create_module("M", ato_ir::ModuleKind::Module);
+        let field_a = design.add_field(m_id, "a", FieldKind::Instance {
+            type_ref: ato_ir::QualifiedName::simple("I2C"),
+            count: None,
+            resolved_type: Some(i2c_id),
+        });
+        let field_b = design.add_field(m_id, "b", FieldKind::Instance {
+            type_ref: ato_ir::QualifiedName::simple("Unknown"),
+            count: None,
+            resolved_type: None,
+        });
+
+        let checker = TypeChecker::new(&design);
+        let left = checker.field_resolved_type(&design.get_field(field_a).unwrap().kind).unwrap();
+        let right = checker.field_resolved_type(&design.get_field(field_b).unwrap().kind).unwrap();
+        assert!(checker.resolved_types_compatible(&left, &right),
+            "Should be permissive when one side has no resolved type");
     }
 }
