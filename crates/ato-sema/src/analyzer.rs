@@ -538,18 +538,6 @@ impl Analyzer {
         self.analyze_imported_module_with_scope(ast, &block.name.name, module_id, design, &extended_scope);
     }
 
-    /// Analyze an imported module to populate its fields (legacy, no scope).
-    #[allow(dead_code)]
-    fn analyze_imported_module(
-        &mut self,
-        ast: &File,
-        module_name: &str,
-        module_id: ato_ir::ModuleId,
-        design: &mut Design,
-    ) {
-        self.analyze_imported_module_with_scope(ast, module_name, module_id, design, &Scope::new());
-    }
-
     /// Analyze an imported module to populate its fields, using a scope for type resolution.
     fn analyze_imported_module_with_scope(
         &mut self,
@@ -677,8 +665,15 @@ impl Analyzer {
                                 _ => {}
                             }
                         }
-                        // Ignore lowerer errors for imported modules (non-critical)
-                        let _ = lowerer.take_errors();
+                        // Collect lowerer errors from imported modules
+                        let import_errors = lowerer.take_errors();
+                        if !import_errors.is_empty() {
+                            eprintln!("warning: {} error(s) while lowering imported module '{}'", import_errors.len(), module_name);
+                            for err in &import_errors {
+                                eprintln!("  {}", err);
+                            }
+                            self.errors.extend(import_errors);
+                        }
                     }
 
                     break;

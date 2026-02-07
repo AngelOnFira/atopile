@@ -3,17 +3,14 @@
 //! This module handles finding and loading imported files, building
 //! the module dependency graph.
 
-pub use crate::error::{ErrorCollector, SemaError};
 use ato_parser::{File, ImportStmt, DepImportStmt, Statement};
-use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 // Re-export public types
 pub use self::types::*;
 
 mod types {
-    use super::*;
-    use ato_parser::File;
+    use std::path::PathBuf;
 
     /// Result of parsing a file for imports.
     #[derive(Debug)]
@@ -21,7 +18,7 @@ mod types {
         /// The file path.
         pub path: PathBuf,
         /// The parsed AST.
-        pub ast: File,
+        pub ast: ato_parser::File,
         /// Imports from this file.
         pub imports: Vec<ImportInfo>,
     }
@@ -36,24 +33,6 @@ mod types {
         /// The source span of the import statement.
         pub span: ato_lexer::Span,
     }
-}
-
-/// Resolves imports and builds a dependency graph.
-pub struct ImportResolver {
-    /// The root directory for resolving relative imports.
-    root_dir: PathBuf,
-
-    /// All parsed files, keyed by canonical path.
-    files: HashMap<PathBuf, ParsedFile>,
-
-    /// Files that are currently being processed (for cycle detection).
-    processing: HashSet<PathBuf>,
-
-    /// Collected errors.
-    errors: ErrorCollector,
-
-    /// File loader (for testing - can be replaced with mock).
-    loader: Box<dyn FileLoader>,
 }
 
 /// Trait for loading files (allows mocking in tests).
@@ -87,11 +66,13 @@ impl FileLoader for FsFileLoader {
 }
 
 /// Mock file loader for testing.
+#[cfg(test)]
 #[derive(Debug, Default)]
 pub struct MockFileLoader {
-    files: HashMap<PathBuf, String>,
+    files: std::collections::HashMap<PathBuf, String>,
 }
 
+#[cfg(test)]
 impl MockFileLoader {
     /// Create a new mock file loader.
     pub fn new() -> Self {
@@ -104,6 +85,7 @@ impl MockFileLoader {
     }
 }
 
+#[cfg(test)]
 impl FileLoader for MockFileLoader {
     fn read(&self, path: &Path) -> Result<String, std::io::Error> {
         self.files
@@ -122,171 +104,31 @@ impl FileLoader for MockFileLoader {
     }
 }
 
-impl ImportResolver {
-    /// Create a new import resolver.
-    pub fn new(root_dir: impl Into<PathBuf>) -> Self {
-        Self {
-            root_dir: root_dir.into(),
-            files: HashMap::new(),
-            processing: HashSet::new(),
-            errors: ErrorCollector::new(),
-            loader: Box::new(FsFileLoader),
-        }
-    }
+/// Extract import information from an AST.
+pub fn extract_imports_from_ast(ast: &File) -> Vec<ImportInfo> {
+    let mut imports = Vec::new();
 
-    /// Create an import resolver with a custom file loader (for testing).
-    pub fn with_loader(root_dir: impl Into<PathBuf>, loader: Box<dyn FileLoader>) -> Self {
-        Self {
-            root_dir: root_dir.into(),
-            files: HashMap::new(),
-            processing: HashSet::new(),
-            errors: ErrorCollector::new(),
-            loader,
-        }
-    }
-
-    /// Resolve imports starting from a source file.
-    pub fn resolve(&mut self, source: &str, source_path: Option<&Path>) -> Result<(), Vec<SemaError>> {
-        let path = source_path
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| self.root_dir.join("<input>"));
-
-        self.resolve_file(source, &path)?;
-
-        if self.errors.has_errors() {
-            Err(self.errors.errors().to_vec())
-        } else {
-            Ok(())
-        }
-    }
-
-    /// Get all parsed files.
-    pub fn files(&self) -> &HashMap<PathBuf, ParsedFile> {
-        &self.files
-    }
-
-    /// Get the errors collected during resolution.
-    pub fn errors(&self) -> &ErrorCollector {
-        &self.errors
-    }
-
-    /// Take the errors out of the resolver.
-    pub fn take_errors(&mut self) -> Vec<SemaError> {
-        std::mem::take(&mut self.errors).into_errors()
-    }
-
-    /// Parse and resolve imports for a single file.
-    fn resolve_file(&mut self, source: &str, path: &Path) -> Result<(), Vec<SemaError>> {
-        let canonical_path = self.loader.canonicalize(path)
-            .unwrap_or_else(|_| path.to_path_buf());
-
-        // Check for cycles
-        if self.processing.contains(&canonical_path) {
-            // Already processing this file - skip to avoid infinite loop
-            return Ok(());
-        }
-
-        // Check if already processed
-        if self.files.contains_key(&canonical_path) {
-            return Ok(());
-        }
-
-        // Mark as processing
-        self.processing.insert(canonical_path.clone());
-
-        // Parse the file
-        let ast = match ato_parser::parse(source) {
-            Ok(ast) => ast,
-            Err(errors) => {
-                self.errors.push(SemaError::ParseError {
-                    file: path.display().to_string(),
-                    message: errors.iter()
-                        .map(|e| e.to_string())
-                        .collect::<Vec<_>>()
-                        .join("; "),
-                });
-                self.processing.remove(&canonical_path);
-                return Ok(());
+    for stmt in &ast.statements {
+        match stmt {
+            Statement::Import(import) => {
+                extract_import_stmt(import, &mut imports);
             }
-        };
-
-        // Extract imports
-        let imports = self.extract_imports(&ast);
-
-        // Store the parsed file
-        self.files.insert(canonical_path.clone(), ParsedFile {
-            path: canonical_path.clone(),
-            ast,
-            imports: imports.clone(),
-        });
-
-        // Resolve each import
-        for import in imports {
-            self.resolve_import(&import, &canonical_path);
-        }
-
-        // Done processing
-        self.processing.remove(&canonical_path);
-
-        Ok(())
-    }
-
-    /// Extract import information from an AST.
-    fn extract_imports(&self, ast: &File) -> Vec<ImportInfo> {
-        Self::extract_imports_from_ast(ast)
-    }
-
-    /// Extract import information from an AST (static method).
-    pub fn extract_imports_from_ast(ast: &File) -> Vec<ImportInfo> {
-        let mut imports = Vec::new();
-
-        for stmt in &ast.statements {
-            match stmt {
-                Statement::Import(import) => {
-                    Self::extract_import_stmt_static(import, &mut imports);
-                }
-                Statement::DepImport(dep_import) => {
-                    Self::extract_dep_import_stmt_static(dep_import, &mut imports);
-                }
-                _ => {}
+            Statement::DepImport(dep_import) => {
+                extract_dep_import_stmt(dep_import, &mut imports);
             }
-        }
-
-        imports
-    }
-
-    /// Extract imports from an import statement.
-    fn extract_import_stmt(&self, import: &ImportStmt, imports: &mut Vec<ImportInfo>) {
-        Self::extract_import_stmt_static(import, imports);
-    }
-
-    /// Extract imports from an import statement (static version).
-    fn extract_import_stmt_static(import: &ImportStmt, imports: &mut Vec<ImportInfo>) {
-        let from_path = import.from_path.as_ref().map(|s| strip_string_quotes(&s.value));
-
-        for type_ref in &import.imports {
-            let name = type_ref.parts
-                .iter()
-                .map(|p| p.name.clone())
-                .collect::<Vec<_>>()
-                .join(".");
-
-            imports.push(ImportInfo {
-                name,
-                from_path: from_path.clone(),
-                span: import.span,
-            });
+            _ => {}
         }
     }
 
-    /// Extract imports from a deprecated import statement.
-    fn extract_dep_import_stmt(&self, import: &DepImportStmt, imports: &mut Vec<ImportInfo>) {
-        Self::extract_dep_import_stmt_static(import, imports);
-    }
+    imports
+}
 
-    /// Extract imports from a deprecated import statement (static version).
-    fn extract_dep_import_stmt_static(import: &DepImportStmt, imports: &mut Vec<ImportInfo>) {
-        let name = import.type_ref.parts
+/// Extract imports from an import statement.
+fn extract_import_stmt(import: &ImportStmt, imports: &mut Vec<ImportInfo>) {
+    let from_path = import.from_path.as_ref().map(|s| strip_string_quotes(&s.value));
+
+    for type_ref in &import.imports {
+        let name = type_ref.parts
             .iter()
             .map(|p| p.name.clone())
             .collect::<Vec<_>>()
@@ -294,51 +136,25 @@ impl ImportResolver {
 
         imports.push(ImportInfo {
             name,
-            from_path: Some(strip_string_quotes(&import.from_path.value)),
+            from_path: from_path.clone(),
             span: import.span,
         });
     }
+}
 
-    /// Resolve a single import.
-    fn resolve_import(&mut self, import: &ImportInfo, _from_file: &Path) {
-        if let Some(from_path) = &import.from_path {
-            // This is a `from "path" import Name` style import
-            let import_path = self.resolve_import_path(from_path);
+/// Extract imports from a deprecated import statement.
+fn extract_dep_import_stmt(import: &DepImportStmt, imports: &mut Vec<ImportInfo>) {
+    let name = import.type_ref.parts
+        .iter()
+        .map(|p| p.name.clone())
+        .collect::<Vec<_>>()
+        .join(".");
 
-            if !self.loader.exists(&import_path) {
-                self.errors.push(SemaError::file_not_found(
-                    import_path.display().to_string(),
-                    Some(import.span),
-                ));
-                return;
-            }
-
-            // Load and parse the imported file
-            match self.loader.read(&import_path) {
-                Ok(source) => {
-                    let _ = self.resolve_file(&source, &import_path);
-                }
-                Err(e) => {
-                    self.errors.push(SemaError::IoError {
-                        message: format!("failed to read '{}': {}", import_path.display(), e),
-                    });
-                }
-            }
-        }
-        // For simple `import Name` without a path, we rely on the name being
-        // defined in the same file or in the stdlib. This is handled during
-        // name resolution, not here.
-    }
-
-    /// Resolve an import path relative to the root directory.
-    fn resolve_import_path(&self, path: &str) -> PathBuf {
-        let path = Path::new(path);
-        if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            self.root_dir.join(path)
-        }
-    }
+    imports.push(ImportInfo {
+        name,
+        from_path: Some(strip_string_quotes(&import.from_path.value)),
+        span: import.span,
+    });
 }
 
 /// Strip surrounding quotes from a string value.
@@ -360,8 +176,7 @@ mod tests {
         let source = "import Foo\n";
         let ast = ato_parser::parse(source).unwrap();
 
-        let resolver = ImportResolver::new(".");
-        let imports = resolver.extract_imports(&ast);
+        let imports = extract_imports_from_ast(&ast);
 
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].name, "Foo");
@@ -374,8 +189,7 @@ mod tests {
         let source = format!("{}\n", source);
         let ast = ato_parser::parse(&source).unwrap();
 
-        let resolver = ImportResolver::new(".");
-        let imports = resolver.extract_imports(&ast);
+        let imports = extract_imports_from_ast(&ast);
 
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].name, "Bar");
@@ -387,8 +201,7 @@ mod tests {
         let source = "import Foo.Bar.Baz\n";
         let ast = ato_parser::parse(source).unwrap();
 
-        let resolver = ImportResolver::new(".");
-        let imports = resolver.extract_imports(&ast);
+        let imports = extract_imports_from_ast(&ast);
 
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].name, "Foo.Bar.Baz");
@@ -404,32 +217,5 @@ mod tests {
 
         let content = loader.read(Path::new("test.ato")).unwrap();
         assert!(content.contains("module M"));
-    }
-
-    #[test]
-    fn test_resolve_with_mock() {
-        let mut loader = MockFileLoader::new();
-        loader.add_file(
-            PathBuf::from("/root/main.ato"),
-            "from \"lib.ato\" import Foo\nmodule Main:\n    pass\n",
-        );
-        loader.add_file(
-            PathBuf::from("/root/lib.ato"),
-            "module Foo:\n    pass\n",
-        );
-
-        let mut resolver = ImportResolver::with_loader(
-            "/root",
-            Box::new(loader),
-        );
-
-        let source = "from \"lib.ato\" import Foo\nmodule Main:\n    pass\n";
-        let result = resolver.resolve(source, Some(Path::new("/root/main.ato")));
-
-        // Should succeed
-        assert!(result.is_ok(), "Resolution should succeed: {:?}", result);
-
-        // Should have parsed both files
-        assert_eq!(resolver.files().len(), 2);
     }
 }

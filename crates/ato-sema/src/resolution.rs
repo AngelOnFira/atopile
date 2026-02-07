@@ -740,7 +740,7 @@ impl Resolver {
         }
 
         // Extract imports for dependency tracking
-        let imports = crate::imports::ImportResolver::extract_imports_from_ast(&ast);
+        let imports = crate::imports::extract_imports_from_ast(&ast);
 
         // Store the parsed file
         let parsed = ParsedFile {
