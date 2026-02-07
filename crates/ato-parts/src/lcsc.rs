@@ -3,6 +3,7 @@
 //! This module provides an HTTP client for querying the LCSC component database
 //! through the JLCPCB API.
 
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use reqwest::blocking::Client;
@@ -25,7 +26,7 @@ const MIN_REQUEST_INTERVAL: Duration = Duration::from_millis(200);
 #[derive(Debug)]
 pub struct LcscClient {
     client: Client,
-    last_request: Option<Instant>,
+    last_request: Mutex<Option<Instant>>,
 }
 
 impl LcscClient {
@@ -39,23 +40,24 @@ impl LcscClient {
 
         Ok(Self {
             client,
-            last_request: None,
+            last_request: Mutex::new(None),
         })
     }
 
     /// Apply rate limiting before making a request.
-    fn rate_limit(&mut self) {
-        if let Some(last) = self.last_request {
-            let elapsed = last.elapsed();
+    fn rate_limit(&self) {
+        let mut last = self.last_request.lock().unwrap();
+        if let Some(prev) = *last {
+            let elapsed = prev.elapsed();
             if elapsed < MIN_REQUEST_INTERVAL {
                 std::thread::sleep(MIN_REQUEST_INTERVAL - elapsed);
             }
         }
-        self.last_request = Some(Instant::now());
+        *last = Some(Instant::now());
     }
 
     /// Search for parts using a text query.
-    pub fn search(&mut self, query: &str, limit: usize) -> DatabaseResult<Vec<Part>> {
+    pub fn search(&self, query: &str, limit: usize) -> DatabaseResult<Vec<Part>> {
         self.rate_limit();
 
         let url = format!("{}/product/search", LCSC_API_BASE);
@@ -101,7 +103,7 @@ impl LcscClient {
     }
 
     /// Fetch a part by its LCSC number.
-    pub fn fetch_part(&mut self, lcsc_id: &str) -> DatabaseResult<Part> {
+    pub fn fetch_part(&self, lcsc_id: &str) -> DatabaseResult<Part> {
         self.rate_limit();
 
         // Normalize the LCSC ID
@@ -145,7 +147,7 @@ impl LcscClient {
     }
 
     /// Search for parts matching a query.
-    pub fn query_parts(&mut self, query: &PartQuery) -> DatabaseResult<Vec<Part>> {
+    pub fn query_parts(&self, query: &PartQuery) -> DatabaseResult<Vec<Part>> {
         // Build search string from query
         let search_string = build_search_string(query);
         let limit = query.limit.unwrap_or(20);
@@ -172,9 +174,7 @@ impl Default for LcscClient {
 
 impl PartDatabase for LcscClient {
     fn query(&self, query: &PartQuery) -> DatabaseResult<Vec<Part>> {
-        // Clone self to get mutable access (rate limiting)
-        let mut client = LcscClient::new()?;
-        client.query_parts(query)
+        self.query_parts(query)
     }
 
     fn fetch_by_id(&self, id: &PartId) -> DatabaseResult<Part> {
@@ -184,23 +184,16 @@ impl PartDatabase for LcscClient {
                 id.supplier
             )));
         }
-        let mut client = LcscClient::new()?;
-        client.fetch_part(&id.supplier_id)
+        self.fetch_part(&id.supplier_id)
     }
 
     fn fetch_by_mpn(&self, manufacturer: &str, part_number: &str) -> DatabaseResult<Vec<Part>> {
-        let mut client = LcscClient::new()?;
         let search = format!("{} {}", manufacturer, part_number);
-        client.search(&search, 10)
+        self.search(&search, 10)
     }
 
     fn is_available(&self) -> bool {
-        // Try a simple request to check availability
-        let client = match LcscClient::new() {
-            Ok(c) => c,
-            Err(_) => return false,
-        };
-        client.client.get(LCSC_API_BASE).send().is_ok()
+        self.client.get(LCSC_API_BASE).send().is_ok()
     }
 
     fn name(&self) -> &str {

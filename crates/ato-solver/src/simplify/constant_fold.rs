@@ -119,6 +119,7 @@ fn fold_arithmetic(
         ArithmeticOp::Subtract => fold_subtract(&lits),
         ArithmeticOp::Multiply => fold_multiply(&lits),
         ArithmeticOp::Divide => fold_divide(&lits),
+        ArithmeticOp::Power => fold_power(&lits),
         ArithmeticOp::Negate => fold_negate(&lits),
         ArithmeticOp::Abs => fold_abs(&lits),
         _ => None,
@@ -205,6 +206,28 @@ fn fold_divide(lits: &[Literal]) -> Option<Literal> {
         (Literal::Quantity(a), Literal::Float(b)) if *b != 0.0 => {
             Some(Literal::Quantity(a.scale(1.0 / *b)))
         }
+        _ => None,
+    }
+}
+
+/// Fold exponentiation of literals.
+fn fold_power(lits: &[Literal]) -> Option<Literal> {
+    if lits.len() != 2 {
+        return None;
+    }
+
+    match (&lits[0], &lits[1]) {
+        (Literal::Integer(a), Literal::Integer(b)) if *b >= 0 => {
+            Some(Literal::Integer(a.pow(*b as u32)))
+        }
+        (Literal::Integer(a), Literal::Integer(b)) => {
+            Some(Literal::Float((*a as f64).powf(*b as f64)))
+        }
+        (Literal::Float(a), Literal::Float(b)) => Some(Literal::Float(a.powf(*b))),
+        (Literal::Integer(a), Literal::Float(b)) => Some(Literal::Float((*a as f64).powf(*b))),
+        (Literal::Float(a), Literal::Integer(b)) => Some(Literal::Float(a.powf(*b as f64))),
+        // Quantity raised to a dimensionless scalar is not yet supported
+        // (would require unit exponentiation, e.g. V^2)
         _ => None,
     }
 }
