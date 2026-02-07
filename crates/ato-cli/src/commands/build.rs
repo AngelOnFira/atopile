@@ -316,18 +316,37 @@ pub fn run(target: Option<&str>, output: Option<&Path>, verbose: bool) -> CliRes
                         ));
                     }
                     Err(SolverError::Timeout { iterations, elapsed }) => {
-                        finish_spinner(&spinner, &format!(
-                            "Solver timed out after {} iterations ({:?})",
-                            iterations, elapsed
+                        spinner.finish_and_clear();
+                        return Err(CliError::solver(
+                            &file_name,
+                            format!(
+                                "Solver timed out after {} iterations ({:?}). \
+                                 Design may have circular or unsolvable constraints.",
+                                iterations, elapsed
+                            ),
+                            None,
+                            source,
                         ));
                     }
                     Err(e) => {
-                        finish_spinner(&spinner, &format!("Solver warning: {}", e));
+                        spinner.finish_and_clear();
+                        return Err(CliError::solver(
+                            &file_name,
+                            format!("Solver error: {}", e),
+                            None,
+                            source,
+                        ));
                     }
                 }
             }
             Err(e) => {
-                finish_spinner(&spinner, &format!("Constraint collection error: {}", e));
+                spinner.finish_and_clear();
+                return Err(CliError::solver(
+                    &file_name,
+                    format!("Constraint collection failed: {}", e),
+                    None,
+                    source,
+                ));
             }
         }
     }
@@ -416,10 +435,8 @@ pub fn run(target: Option<&str>, output: Option<&Path>, verbose: bool) -> CliRes
     let netlist = match builder.build() {
         Ok(netlist) => netlist,
         Err(e) => {
-            if verbose {
-                println!("    Warning: Failed to build netlist: {}", e);
-            }
-            ato_export::Netlist::new()
+            gen_spinner.finish_and_clear();
+            return Err(CliError::io(format!("Failed to build netlist: {}", e)));
         }
     };
 
@@ -710,11 +727,24 @@ fn pick_parts(
             continue;
         }
 
-        // Look up the solved parameter value using field path convention
-        // Try both "instance.param" and just "param" (for top-level)
+        // Look up the solved parameter value using field path convention.
+        // The constraint collector names parameters by their field path as seen
+        // from the module where the constraint lives:
+        // - "r1.resistance" if the constraint is in the parent (e.g., App)
+        // - "resistance" if the constraint is inside the Resistor module itself
+        // We try the instance-qualified name first, then fall back to the bare
+        // parameter name (which would match if the constraint is inherited).
         let param_key = format!("{}.{}", instance_name, param_name);
         let value_str = solved_params.get(&param_key)
-            .or_else(|| solved_params.get(param_name));
+            .or_else(|| solved_params.get(param_name))
+            .or_else(|| {
+                // Search for any key ending with ".{param_name}" that could
+                // correspond to this instance through nested paths
+                let suffix = format!(".{}", param_name);
+                solved_params.iter()
+                    .find(|(k, _)| k.ends_with(&suffix) && instance_name.starts_with(k.trim_end_matches(&suffix)))
+                    .map(|(_, v)| v)
+            });
 
         let value_range = value_str.and_then(|v| parse_parameter_range(v));
 
@@ -776,8 +806,6 @@ fn pick_parts(
                             format!("{}.lcsc", instance_name),
                             lcsc.to_string(),
                         );
-                        // Also store as top-level key for simple cases
-                        result.insert("lcsc".to_string(), lcsc.to_string());
                     }
 
                     // Map package name to KiCad footprint naming convention
@@ -796,10 +824,8 @@ fn pick_parts(
 
                     result.insert(
                         format!("{}.footprint", instance_name),
-                        footprint.clone(),
+                        footprint,
                     );
-                    // Also store as top-level for single-passive designs
-                    result.insert("footprint".to_string(), footprint);
 
                     // Store value string for BOM
                     if let Some((min, max)) = value_range {
@@ -923,6 +949,9 @@ fn convert_sema_errors(errors: &[SemaError]) -> Vec<SemanticErrorInfo> {
             }
             SemaError::CircularImport { file } => {
                 (format!("circular import detected: '{}'", file), None, Some("Check for import cycles between files".into()))
+            }
+            SemaError::UnsupportedFeature { feature, span } => {
+                (format!("unsupported feature: {}", feature), span_to_tuple(span), None)
             }
         };
         SemanticErrorInfo { message, span, help }
