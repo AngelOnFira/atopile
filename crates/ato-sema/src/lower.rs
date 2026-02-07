@@ -497,17 +497,58 @@ impl<'a> Lowerer<'a> {
     /// Lower a retype statement (`instance.field -> NewType`).
     fn lower_retype(&mut self, retype: &Retype, _module_id: ModuleId, scope: &Scope) {
         let field_path = self.lower_field_ref(&retype.field);
-        if let Some(field_id) = self.resolve_field_path(&field_path, scope) {
-            let type_name = retype.new_type.parts.last()
-                .map(|p| p.name.as_str())
-                .unwrap_or("");
-            if let Some(binding) = scope.lookup(type_name) {
-                if let Some(type_module_id) = binding.as_module() {
-                    if let Some(field) = self.design.get_field_mut(field_id) {
-                        if let FieldKind::Instance { resolved_type, .. } = &mut field.kind {
-                            *resolved_type = Some(type_module_id);
-                        }
-                    }
+        let field_id = match self.resolve_field_path(&field_path, scope) {
+            Some(id) => id,
+            None => {
+                let path_str = field_path.parts.iter()
+                    .map(|p| match p {
+                        FieldPathPart::Name(n) => n.clone(),
+                        FieldPathPart::Index(i) => format!("[{}]", i),
+                        FieldPathPart::PinRef(n) => format!(".{}", n),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(".");
+                self.errors.push(SemaError::unsupported_feature(
+                    format!("cannot resolve retype target '{}'", path_str),
+                    retype.field.span,
+                ));
+                return;
+            }
+        };
+
+        let type_name = retype.new_type.parts.last()
+            .map(|p| p.name.as_str())
+            .unwrap_or("");
+
+        let type_module_id = match scope.lookup(type_name).and_then(|b| b.as_module()) {
+            Some(id) => id,
+            None => {
+                self.errors.push(SemaError::unsupported_feature(
+                    format!("cannot resolve retype type '{}'", type_name),
+                    retype.new_type.span,
+                ));
+                return;
+            }
+        };
+
+        if let Some(field) = self.design.get_field_mut(field_id) {
+            match &mut field.kind {
+                FieldKind::Instance { resolved_type, .. } => {
+                    *resolved_type = Some(type_module_id);
+                }
+                _ => {
+                    // If the field is not an Instance, convert it to one
+                    // This handles cases where the field was created as a different kind
+                    let type_ref = ato_ir::QualifiedName::new(
+                        retype.new_type.parts.iter()
+                            .map(|p| p.name.clone())
+                            .collect()
+                    );
+                    field.kind = FieldKind::Instance {
+                        type_ref,
+                        count: None,
+                        resolved_type: Some(type_module_id),
+                    };
                 }
             }
         }

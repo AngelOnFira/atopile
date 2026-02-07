@@ -201,6 +201,44 @@ impl<'a> NameResolver<'a> {
         // Look up the base type
         if let Some(binding) = scope.lookup(&super_name) {
             if let Some(super_id) = binding.as_module() {
+                // Check for direct self-inheritance
+                if super_id == module_id {
+                    let module_name = self.design.get_module(module_id)
+                        .map(|m| m.name.clone())
+                        .unwrap_or_default();
+                    self.errors.push(SemaError::cyclic_inheritance(
+                        format!("{0} -> {0}", module_name),
+                        Some(super_ref.span),
+                    ));
+                    return;
+                }
+
+                // Check for indirect cycles by walking the super_type chain
+                let mut visited = std::collections::HashSet::new();
+                visited.insert(module_id);
+                let mut current = super_id;
+                while let Some(module) = self.design.get_module(current) {
+                    if !visited.insert(current) {
+                        // Cycle detected - build chain string
+                        let module_name = self.design.get_module(module_id)
+                            .map(|m| m.name.clone())
+                            .unwrap_or_default();
+                        let chain: Vec<String> = visited.iter()
+                            .filter_map(|&id| self.design.get_module(id).map(|m| m.name.clone()))
+                            .collect();
+                        self.errors.push(SemaError::cyclic_inheritance(
+                            format!("{} -> {}", chain.join(" -> "), module_name),
+                            Some(super_ref.span),
+                        ));
+                        return;
+                    }
+                    if let Some(next) = module.super_type {
+                        current = next;
+                    } else {
+                        break;
+                    }
+                }
+
                 // Set the super type
                 if let Some(module) = self.design.get_module_mut(module_id) {
                     module.super_type = Some(super_id);
@@ -723,6 +761,20 @@ module Child from Base:
             .and_then(|id| design.get_module(id))
             .unwrap();
         assert_eq!(child.super_type, Some(base_id));
+    }
+
+    #[test]
+    fn test_self_inheritance_detected() {
+        let source = r#"
+module A from A:
+    pass
+"#;
+        let (_, errors) = parse_and_resolve(source);
+        assert!(!errors.is_empty(), "Self-inheritance should be detected");
+        assert!(
+            errors.iter().any(|e| matches!(e, SemaError::CyclicInheritance { .. })),
+            "Expected CyclicInheritance error, got: {:?}", errors
+        );
     }
 
     #[test]
