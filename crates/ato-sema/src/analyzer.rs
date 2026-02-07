@@ -385,6 +385,7 @@ impl Analyzer {
         // This ensures sibling modules are available as types for each other
         let mut visited = std::collections::HashSet::new();
         for (name, _) in &exports {
+            let mut inheritance_chain = Vec::new();
             self.process_module_with_inheritance(
                 &ast,
                 name,
@@ -394,6 +395,7 @@ impl Analyzer {
                 design,
                 scope,
                 &mut visited,
+                &mut inheritance_chain,
             );
         }
 
@@ -412,8 +414,20 @@ impl Analyzer {
         design: &mut Design,
         scope: &mut Scope,
         visited: &mut std::collections::HashSet<String>,
+        inheritance_chain: &mut Vec<String>,
     ) {
-        // Prevent infinite recursion
+        // Check for circular inheritance
+        if inheritance_chain.contains(&module_name.to_string()) {
+            inheritance_chain.push(module_name.to_string());
+            let chain_str = inheritance_chain.join(" -> ");
+            let span = blocks_by_name.get(module_name)
+                .map(|b| b.span);
+            self.errors.push(SemaError::cyclic_inheritance(chain_str, span));
+            inheritance_chain.pop();
+            return;
+        }
+
+        // Prevent reprocessing already-handled modules
         if visited.contains(module_name) {
             return;
         }
@@ -450,6 +464,9 @@ impl Analyzer {
                 .map(|p| p.name.clone())
                 .unwrap_or_default();
 
+            // Track this module in the inheritance chain for cycle detection
+            inheritance_chain.push(module_name.to_string());
+
             // First check if super type is in import_scope (imported)
             if let Some(binding) = import_scope.lookup(&super_name) {
                 if let Some(module_id) = binding.as_module() {
@@ -467,8 +484,11 @@ impl Analyzer {
                     design,
                     scope,
                     visited,
+                    inheritance_chain,
                 );
             }
+
+            inheritance_chain.pop();
         }
 
         // Now add this module

@@ -211,6 +211,14 @@ impl SemaError {
         }
     }
 
+    /// Create a cyclic inheritance error.
+    pub fn cyclic_inheritance(chain: impl Into<String>, span: impl Into<Option<Span>>) -> Self {
+        Self::CyclicInheritance {
+            chain: chain.into(),
+            span: span.into(),
+        }
+    }
+
     /// Create an unsupported feature error.
     pub fn unsupported_feature(feature: impl Into<String>, span: impl Into<Option<Span>>) -> Self {
         Self::UnsupportedFeature {
