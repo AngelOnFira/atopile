@@ -572,11 +572,10 @@ fn test_gap_semicolon_separated_toplevel() {
 
 #[test]
 fn test_gap_in_as_identifier() {
-    // KNOWN GAP: 'in' keyword can't be used as identifier
-    // Hardware designs commonly use 'in' for input
+    // 'in' keyword can be used as identifier (e.g., signal names, pin names)
+    // The parser's identifier() function accepts keyword tokens including In
     let result = parse_ok("module Test:\n    signal in");
-    // This is expected to fail
-    assert!(result.is_err(), "'in' as identifier not yet supported");
+    assert!(result.is_ok(), "Expected 'in' to work as identifier, got error: {:?}", result.err());
 }
 
 #[test]
