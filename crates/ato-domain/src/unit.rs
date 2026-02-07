@@ -31,6 +31,9 @@ pub enum Unit {
     /// Hertz (Hz) - frequency
     Hertz,
 
+    /// Ampere-hours (Ah) - battery capacity
+    AmpereHour,
+
     // Metric prefixes (applied to base units)
     // Time units
     /// Seconds (s)
@@ -55,6 +58,7 @@ impl Unit {
             Unit::Henry => "H",
             Unit::Watt => "W",
             Unit::Hertz => "Hz",
+            Unit::AmpereHour => "Ah",
             Unit::Second => "s",
             Unit::Meter => "m",
             Unit::Millimeter => "mm",
@@ -72,6 +76,7 @@ impl Unit {
             Unit::Henry => "henry",
             Unit::Watt => "watt",
             Unit::Hertz => "hertz",
+            Unit::AmpereHour => "ampere-hour",
             Unit::Second => "second",
             Unit::Meter => "meter",
             Unit::Millimeter => "millimeter",
@@ -141,6 +146,10 @@ impl Unit {
             (Unit::Volt, Unit::Ohm) => Some(Unit::Ampere),
             (Unit::Watt, Unit::Volt) => Some(Unit::Ampere),
             (Unit::Watt, Unit::Ampere) => Some(Unit::Volt),
+            // AmpereHour / Second = Ampere (capacity / time = current)
+            // In practice, "h" in ato can mean hours (Second-scale), and Ah/h = A
+            (Unit::AmpereHour, Unit::Henry) => Some(Unit::Ampere),
+            (Unit::AmpereHour, Unit::Second) => Some(Unit::Ampere),
             _ => None,
         }
     }
@@ -148,14 +157,15 @@ impl Unit {
     /// Parse a unit from a string.
     pub fn from_str(s: &str) -> Option<Unit> {
         match s.to_lowercase().as_str() {
-            "" | "1" => Some(Unit::Dimensionless),
-            "v" | "volt" | "volts" => Some(Unit::Volt),
-            "a" | "amp" | "ampere" | "amperes" => Some(Unit::Ampere),
+            "" | "1" | "dimensionless" => Some(Unit::Dimensionless),
+            "v" | "volt" | "volts" | "voltage" => Some(Unit::Volt),
+            "a" | "amp" | "ampere" | "amperes" | "current" => Some(Unit::Ampere),
             "ohm" | "ohms" | "ω" => Some(Unit::Ohm),
             "f" | "farad" | "farads" => Some(Unit::Farad),
             "h" | "henry" | "henrys" | "henries" => Some(Unit::Henry),
             "w" | "watt" | "watts" => Some(Unit::Watt),
             "hz" | "hertz" => Some(Unit::Hertz),
+            "ah" | "ampere-hour" | "ampere-hours" => Some(Unit::AmpereHour),
             "s" | "sec" | "second" | "seconds" => Some(Unit::Second),
             "m" | "meter" | "meters" => Some(Unit::Meter),
             "mm" | "millimeter" | "millimeters" => Some(Unit::Millimeter),

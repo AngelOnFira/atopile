@@ -545,7 +545,7 @@ fn test_led_badge_netlist_designator_prefixes() {
     let netlist = build_led_badge_netlist().unwrap();
 
     // Every designator should start with a known prefix letter
-    let known_prefixes = ["R", "C", "L", "U", "J", "LED", "D", "Q"];
+    let known_prefixes = ["R", "C", "L", "U", "J", "LED", "D", "Q", "SW"];
 
     for comp in &netlist.components {
         let has_known_prefix = known_prefixes.iter().any(|p| comp.reference.starts_with(p));
@@ -713,13 +713,14 @@ fn test_led_badge_bom_exact_counts() {
         *prefix_counts.entry(prefix).or_default() += 1;
     }
 
-    // Expected counts from the BOM: C115, LED100, R14, L1, J1, U7
+    // Expected counts from the BOM: C115, LED100, R14, L1, J1, U7, SW2
     let led_count = *prefix_counts.get("LED").unwrap_or(&0);
     let cap_count = *prefix_counts.get("C").unwrap_or(&0);
     let res_count = *prefix_counts.get("R").unwrap_or(&0);
     let ind_count = *prefix_counts.get("L").unwrap_or(&0);
     let conn_count = *prefix_counts.get("J").unwrap_or(&0);
     let ic_count = *prefix_counts.get("U").unwrap_or(&0);
+    let sw_count = *prefix_counts.get("SW").unwrap_or(&0);
 
     assert_eq!(led_count, 100, "Expected 100 LEDs, got {}", led_count);
     assert_eq!(cap_count, 115, "Expected 115 capacitors, got {}", cap_count);
@@ -727,9 +728,10 @@ fn test_led_badge_bom_exact_counts() {
     assert_eq!(ind_count, 1, "Expected 1 inductor, got {}", ind_count);
     assert_eq!(conn_count, 1, "Expected 1 connector, got {}", conn_count);
     assert_eq!(ic_count, 7, "Expected 7 ICs, got {}", ic_count);
+    assert_eq!(sw_count, 2, "Expected 2 switches, got {}", sw_count);
 
     let total = netlist.component_count();
-    assert_eq!(total, 238, "Expected 238 total components, got {}", total);
+    assert_eq!(total, 240, "Expected 240 total components, got {}", total);
 }
 
 #[test]
@@ -752,9 +754,10 @@ fn test_led_badge_package_components_have_footprints_and_lcsc() {
     let netlist = build_led_badge_netlist().unwrap();
 
     // Package-level components that should have both footprint and LCSC:
-    // J1 (connector), U1 (ESP32), U2 (microphone), U3 (USB-C), U4 (buck-boost), U5 (charger)
+    // J1 (connector), U3 (buck-boost), U4 (charger), U5 (ESP32), U6 (microphone), U7 (USB-C)
     // LED1-LED100 (addressable LEDs)
-    let package_refs = ["J1", "U1", "U2", "U3", "U4", "U5"];
+    // Note: U1 is a logo and U2 is a battery — neither has LCSC part numbers
+    let package_refs = ["J1", "U3", "U4", "U5", "U6", "U7"];
 
     for ref_name in &package_refs {
         let comp = netlist.components.iter()

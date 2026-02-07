@@ -1078,4 +1078,43 @@ mod tests {
             panic!("Expected instance field");
         }
     }
+
+    #[test]
+    fn test_retype_deep_path() {
+        // Test retype on a deep field path: outer.inner.field -> NewType
+        let source = r#"
+module Button:
+    pin input
+    pin output
+
+module VerticalButton from Button:
+    pass
+
+module SignalButton:
+    button = new Button
+
+module ButtonPulldown:
+    button = new SignalButton
+
+module App:
+    reset_button = new ButtonPulldown
+    reset_button.button.button -> VerticalButton
+"#;
+        let (design, errors) = lower(source);
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+
+        // Find the inner button field in SignalButton
+        let signal_button_id = design.find_module("SignalButton").unwrap();
+        let signal_button = design.get_module(signal_button_id).unwrap();
+        let inner_button_id = signal_button.get_field("button").expect("SignalButton should have button field");
+        let inner_button = design.get_field(inner_button_id).unwrap();
+
+        if let FieldKind::Instance { resolved_type, .. } = &inner_button.kind {
+            let vertical_id = design.find_module("VerticalButton").unwrap();
+            assert_eq!(*resolved_type, Some(vertical_id),
+                "Deep retype should update resolved_type to VerticalButton");
+        } else {
+            panic!("Expected instance field for inner button");
+        }
+    }
 }

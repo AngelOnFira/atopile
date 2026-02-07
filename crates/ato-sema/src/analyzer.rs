@@ -679,7 +679,8 @@ impl Analyzer {
                         let mut lowerer = Lowerer::new(design);
                         for body_stmt in &block.body {
                             match body_stmt {
-                                Statement::Connection(_) | Statement::DirectedConnection(_) => {
+                                Statement::Connection(_) | Statement::DirectedConnection(_)
+                                | Statement::Retype(_) => {
                                     lowerer.lower_block_statement(body_stmt, module_id, &mut module_scope);
                                 }
                                 _ => {}
@@ -1634,5 +1635,42 @@ module App:
         } else {
             panic!("btn should be an Instance field");
         }
+    }
+
+    #[test]
+    fn test_circular_inheritance_self() {
+        let source = r#"
+module A from A:
+    pass
+"#;
+        let mut analyzer = Analyzer::new();
+        let result = analyzer.analyze_source(source);
+        assert!(result.is_err(), "Self-inheritance should produce an error");
+        let errors = result.unwrap_err();
+        assert!(
+            errors.iter().any(|e| matches!(e, SemaError::CyclicInheritance { .. })),
+            "Expected CyclicInheritance error, got: {:?}", errors
+        );
+    }
+
+    #[test]
+    fn test_valid_inheritance_chain() {
+        // Non-cyclic inheritance chain should work fine
+        let source = r#"
+module A:
+    pin p1
+module B from A:
+    pin p2
+module C from B:
+    pin p3
+"#;
+        let mut analyzer = Analyzer::new();
+        let design = analyzer.analyze_source(source).unwrap();
+        assert_eq!(design.module_count(), 3);
+
+        let c_id = design.find_module("C").unwrap();
+        let c = design.get_module(c_id).unwrap();
+        let b_id = design.find_module("B").unwrap();
+        assert_eq!(c.super_type, Some(b_id));
     }
 }
