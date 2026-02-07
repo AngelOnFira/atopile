@@ -1,0 +1,8 @@
+module Connections:
+    pin a
+    pin b
+    pin c
+    signal sig1
+    a ~ b
+    b ~ c
+    a ~ sig1

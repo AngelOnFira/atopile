@@ -1,0 +1,4 @@
+module Demo:
+    inst = new Base
+    inst -> Child
+    arr = new Base[10]

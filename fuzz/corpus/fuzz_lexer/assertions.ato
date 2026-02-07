@@ -1,0 +1,8 @@
+module Assertions:
+    x: V
+    y: ohm
+    assert x > 5V
+    assert x < 10V
+    assert y >= 1kohm
+    assert y <= 100kohm
+    assert x within 3V to 5V

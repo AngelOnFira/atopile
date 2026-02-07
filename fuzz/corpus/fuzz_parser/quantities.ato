@@ -1,0 +1,7 @@
+module Quantities:
+    voltage_val: V = 5V
+    resistance: ohm = 10kohm
+    capacitance: F = 100nF
+    current: A = 10mA
+    tolerance_val = 1kohm +/- 10%
+    range_val = 3V to 3.6V

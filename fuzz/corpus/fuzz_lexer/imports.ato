@@ -1,0 +1,6 @@
+import Resistor
+import Module1, Module2
+from "path/to/source.ato" import SpecificModule
+
+module App:
+    r = new Resistor

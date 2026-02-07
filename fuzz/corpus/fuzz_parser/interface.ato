@@ -1,0 +1,6 @@
+interface MyInterface:
+    pin io
+    pin gnd
+
+module User:
+    port = new MyInterface

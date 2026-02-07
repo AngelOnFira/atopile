@@ -1,0 +1,7 @@
+module Expressions:
+    a = 1 + 2
+    b = 10 - 3ohm
+    c = 5 * 2mA
+    d = 10V / 2kohm
+    e = 2**3
+    f = (5 + 3) * 2 - 1

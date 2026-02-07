@@ -1,0 +1,31 @@
+[package]
+name = "ato-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+ato-lexer = { path = "../crates/ato-lexer" }
+ato-parser = { path = "../crates/ato-parser" }
+
+# Prevent this from interfering with workspace
+[workspace]
+
+[[bin]]
+name = "fuzz_lexer"
+path = "fuzz_targets/fuzz_lexer.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_parser"
+path = "fuzz_targets/fuzz_parser.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_pipeline"
+path = "fuzz_targets/fuzz_pipeline.rs"
+doc = false

@@ -1,0 +1,4 @@
+component Resistor:
+    pin 1
+    pin 2
+    resistance: ohm

@@ -1,0 +1,5 @@
+module Base:
+    x: V = 5V
+
+module Child from Base:
+    y: ohm = 10kohm
