@@ -198,6 +198,71 @@ pub struct NetlistBuilder<'a> {
     entry_module: Option<ModuleId>,
 }
 
+/// Natural-order comparison for strings containing numbers.
+/// Splits strings into alphabetic and numeric segments and compares them
+/// so that "R2" < "R10" (unlike lexicographic order).
+fn natord_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let mut ai = a.chars().peekable();
+    let mut bi = b.chars().peekable();
+
+    loop {
+        match (ai.peek(), bi.peek()) {
+            (None, None) => return std::cmp::Ordering::Equal,
+            (None, Some(_)) => return std::cmp::Ordering::Less,
+            (Some(_), None) => return std::cmp::Ordering::Greater,
+            (Some(&ac), Some(&bc)) => {
+                if ac.is_ascii_digit() && bc.is_ascii_digit() {
+                    // Parse numeric segments
+                    let mut an = 0u64;
+                    while let Some(&c) = ai.peek() {
+                        if c.is_ascii_digit() {
+                            an = an * 10 + c.to_digit(10).unwrap() as u64;
+                            ai.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    let mut bn = 0u64;
+                    while let Some(&c) = bi.peek() {
+                        if c.is_ascii_digit() {
+                            bn = bn * 10 + c.to_digit(10).unwrap() as u64;
+                            bi.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    match an.cmp(&bn) {
+                        std::cmp::Ordering::Equal => continue,
+                        ord => return ord,
+                    }
+                } else {
+                    match ac.cmp(&bc) {
+                        std::cmp::Ordering::Equal => {
+                            ai.next();
+                            bi.next();
+                            continue;
+                        }
+                        ord => return ord,
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Derive a descriptive, deterministic net name from sorted endpoint paths.
+///
+/// Uses the alphabetically first path as the base name, replacing dots with
+/// underscores for readability (e.g., "power_3v3.hv" becomes "power_3v3_hv").
+fn derive_net_name(sorted_paths: &[String]) -> String {
+    if let Some(first) = sorted_paths.first() {
+        // Use the first (alphabetically smallest) path, replacing dots with underscores
+        first.replace('.', "_")
+    } else {
+        "Net".to_string()
+    }
+}
+
 impl<'a> NetlistBuilder<'a> {
     /// Create a new netlist builder.
     pub fn new(design: &'a Design) -> Self {
@@ -235,6 +300,22 @@ impl<'a> NetlistBuilder<'a> {
 
         // Second pass: build nets from connections
         self.build_nets()?;
+
+        // Sort components by reference designator for deterministic output
+        self.netlist.components.sort_by(|a, b| {
+            natord_cmp(&a.reference, &b.reference)
+        });
+
+        // Sort nets by name for deterministic output
+        self.netlist.nets.sort_by(|a, b| a.name.cmp(&b.name));
+
+        // Sort nodes within each net for deterministic output
+        for net in &mut self.netlist.nets {
+            net.nodes.sort_by(|a, b| {
+                natord_cmp(&a.component, &b.component)
+                    .then_with(|| a.pin.cmp(&b.pin))
+            });
+        }
 
         Ok(self.netlist)
     }
@@ -432,18 +513,18 @@ impl<'a> NetlistBuilder<'a> {
 
     /// Collect all components from the design.
     ///
-    /// Walks the module instance hierarchy recursively starting from the entry
-    /// module (if set) or all root modules. Finds leaf components that have
-    /// pins or contain a `package` instance with pins.
+    /// Uses a two-phase approach for deterministic designator assignment:
+    /// 1. Collect all pending components with their hierarchy paths and prefix info
+    /// 2. Sort by (prefix, hierarchy_path) and assign designators sequentially
     ///
-    /// Also handles legacy modules with pins that aren't instantiated anywhere.
+    /// This ensures the same component always gets the same designator regardless
+    /// of HashMap iteration order or other nondeterminism.
     fn collect_components(&mut self) -> Result<(), ExportError> {
         let mapper = LibraryMapper::new();
         let mut modules_used_as_types = std::collections::HashSet::new();
 
         // Collect all modules used as instance types or super_types
         for module in self.design.modules() {
-            // Track modules used as super types (base classes) - they aren't standalone components
             if let Some(super_id) = module.super_type {
                 modules_used_as_types.insert(super_id);
             }
@@ -464,8 +545,6 @@ impl<'a> NetlistBuilder<'a> {
         let root_modules: Vec<ModuleId> = if let Some(entry) = self.entry_module {
             vec![entry]
         } else {
-            // Walk from modules that are not themselves used as instance types
-            // and are not interfaces
             self.design
                 .modules()
                 .iter()
@@ -474,68 +553,133 @@ impl<'a> NetlistBuilder<'a> {
                 .collect()
         };
 
-        // Recursively collect components from root modules
+        // Phase 1: Collect pending components (without assigning designators yet)
+        // Each entry: (instance_path, prefix, value, module_name, footprint_info, field_id, array_key, module_id_for_legacy)
+        let mut pending: Vec<(
+            String,                          // instance_path (sort key)
+            String,                          // designator prefix
+            String,                          // value
+            String,                          // module_name
+            FootprintInfo,                   // footprint info
+            HashMap<String, String>,         // extra properties
+            Option<FieldId>,                 // field_id for non-array instances
+            Option<(FieldId, u32)>,          // array_key for array instances
+            Option<ModuleId>,                // module_id for legacy second-pass
+        )> = Vec::new();
+
+        // Recursively collect from root modules
         for root_id in &root_modules {
-            self.collect_components_recursive(*root_id, "", &mapper, &mut std::collections::HashSet::new());
+            self.collect_components_pending(
+                *root_id, "", &mapper, &mut std::collections::HashSet::new(), &mut pending,
+            );
         }
 
-        // Second pass: for modules with pins that aren't used as instance types
-        // and haven't already been added (legacy/simple component model).
-        // Skip when entry_module is set - we only want components reachable from entry.
-        if self.entry_module.is_some() {
-            return Ok(());
+        // Second pass: legacy modules with pins not used as instance types
+        if self.entry_module.is_none() {
+            // Track which module IDs were already collected
+            let collected_module_ids: std::collections::HashSet<ModuleId> = pending
+                .iter()
+                .filter_map(|p| p.8)
+                .collect();
+
+            for module in self.design.modules() {
+                if modules_used_as_types.contains(&module.id) {
+                    continue;
+                }
+                if module.is_interface() {
+                    continue;
+                }
+                if collected_module_ids.contains(&module.id) {
+                    continue;
+                }
+                // Check if any pending entry already has this module via instance
+                let already_has = pending.iter().any(|p| {
+                    p.3 == module.name
+                });
+                if already_has {
+                    continue;
+                }
+
+                let has_pins = self.module_has_pins(module.id);
+                if has_pins {
+                    let prefix = self.get_designator_prefix(module.id);
+                    let value = self.get_module_value(module.id);
+                    let footprint_info = self.extract_footprint_info(module.id, &mapper);
+                    let mut extra = HashMap::new();
+                    extra.insert("module".to_string(), module.name.clone());
+
+                    pending.push((
+                        module.name.clone(), // use module name as sort key for legacy
+                        prefix,
+                        value,
+                        module.name.clone(),
+                        footprint_info,
+                        extra,
+                        None,
+                        None,
+                        Some(module.id),
+                    ));
+                }
+            }
         }
-        for module in self.design.modules() {
-            if modules_used_as_types.contains(&module.id) {
-                continue;
-            }
-            if module.is_interface() {
-                continue;
-            }
-            // Skip if already added through instance collection
-            if self.module_to_ref.contains_key(&module.id) {
-                continue;
+
+        // Phase 2: Sort by (prefix, instance_path) for deterministic ordering
+        pending.sort_by(|a, b| {
+            a.1.cmp(&b.1)
+                .then_with(|| natord_cmp(&a.0, &b.0))
+        });
+
+        // Phase 3: Assign designators and register components
+        for (instance_path, prefix, value, _module_name, footprint_info, extra_props,
+             field_id, array_key, module_id) in pending
+        {
+            let reference = self.generate_reference(&prefix);
+
+            let mut component = NetlistComponent::new(&reference, &value);
+
+            for (k, v) in &extra_props {
+                component = component.with_property(k.clone(), v.clone());
             }
 
-            let has_pins = self.module_has_pins(module.id);
-            if has_pins {
-                let prefix = self.get_designator_prefix(module.id);
-                let reference = self.generate_reference(&prefix);
-                let value = self.get_module_value(module.id);
-                let footprint_info = self.extract_footprint_info(module.id, &mapper);
-
-                let mut component = NetlistComponent::new(&reference, value)
-                    .with_property("module", module.name.clone());
-
-                if let Some(ref fp) = footprint_info.footprint {
-                    component = component.with_footprint(fp.clone());
-                }
-                if let Some(ref lcsc) = footprint_info.lcsc {
-                    component = component.with_property("lcsc", lcsc.clone());
-                }
-
-                self.module_to_ref.insert(module.id, reference);
-                self.netlist.add_component(component);
+            // Add instance path property (for instance-based components)
+            if field_id.is_some() || array_key.is_some() {
+                component = component.with_property("instance", instance_path);
             }
+
+            if let Some(ref fp) = footprint_info.footprint {
+                component = component.with_footprint(fp.clone());
+            }
+            if let Some(ref lcsc) = footprint_info.lcsc {
+                component = component.with_property("lcsc", lcsc.clone());
+            }
+
+            // Register the reference mapping
+            if let Some(ak) = array_key {
+                self.array_instance_to_ref.insert(ak, reference.clone());
+            } else if let Some(fid) = field_id {
+                self.instance_to_ref.insert(fid, reference.clone());
+            } else if let Some(mid) = module_id {
+                self.module_to_ref.insert(mid, reference.clone());
+            }
+
+            self.netlist.add_component(component);
         }
 
         Ok(())
     }
 
-    /// Recursively collect components from a module's instance hierarchy.
+    /// Recursively collect pending components from a module's instance hierarchy.
     ///
-    /// For each instance field in the module:
-    /// - If the target is a physical component (has pins), add it as a component
-    /// - If the target is a container (has instances but no pins), recurse into it
-    /// - Array instances are expanded: each element is processed separately
-    fn collect_components_recursive(
-        &mut self,
+    /// Similar to the old `collect_components_recursive` but collects into a
+    /// pending list instead of directly assigning designators.
+    fn collect_components_pending(
+        &self,
         module_id: ModuleId,
         path_prefix: &str,
         mapper: &LibraryMapper,
         visited: &mut std::collections::HashSet<ModuleId>,
+        pending: &mut Vec<(String, String, String, String, FootprintInfo, HashMap<String, String>, Option<FieldId>, Option<(FieldId, u32)>, Option<ModuleId>)>,
     ) {
-        // Prevent infinite recursion
         if !visited.insert(module_id) {
             return;
         }
@@ -545,7 +689,6 @@ impl<'a> NetlistBuilder<'a> {
             None => return,
         };
 
-        // Collect instance fields from this module
         let instance_fields: Vec<(FieldId, String, Option<u32>, Option<ModuleId>)> = module
             .fields
             .iter()
@@ -570,7 +713,6 @@ impl<'a> NetlistBuilder<'a> {
                 None => continue,
             };
 
-            // Skip interfaces
             if let Some(target) = self.design.get_module(type_module_id) {
                 if target.is_interface() {
                     continue;
@@ -586,7 +728,6 @@ impl<'a> NetlistBuilder<'a> {
             let is_container = self.module_has_instances(type_module_id);
 
             if is_leaf {
-                // This is a physical component - add it
                 let footprint_info = self.extract_footprint_info(type_module_id, mapper);
                 let target_name = self.design.get_module(type_module_id)
                     .map(|m| m.name.clone())
@@ -594,7 +735,6 @@ impl<'a> NetlistBuilder<'a> {
 
                 for idx in 0..instance_count {
                     let prefix = self.get_designator_prefix_deep(type_module_id);
-                    let reference = self.generate_reference(&prefix);
 
                     let instance_path = if instance_count > 1 {
                         if path_prefix.is_empty() {
@@ -610,29 +750,31 @@ impl<'a> NetlistBuilder<'a> {
 
                     let value = self.get_instance_value(&instance_path, type_module_id);
 
-                    let mut component = NetlistComponent::new(&reference, &value)
-                        .with_property("module", target_name.clone())
-                        .with_property("instance", instance_path);
-
-                    if let Some(ref fp) = footprint_info.footprint {
-                        component = component.with_footprint(fp.clone());
-                    }
-                    if let Some(ref lcsc) = footprint_info.lcsc {
-                        component = component.with_property("lcsc", lcsc.clone());
-                    }
-
+                    let mut extra = HashMap::new();
+                    extra.insert("module".to_string(), target_name.clone());
                     if instance_count > 1 {
-                        component = component.with_property("array_index", idx.to_string());
-                        self.array_instance_to_ref
-                            .insert((field_id, idx), reference.clone());
-                    } else {
-                        self.instance_to_ref.insert(field_id, reference.clone());
+                        extra.insert("array_index".to_string(), idx.to_string());
                     }
 
-                    self.netlist.add_component(component);
+                    let (fid_opt, ak_opt) = if instance_count > 1 {
+                        (None, Some((field_id, idx)))
+                    } else {
+                        (Some(field_id), None)
+                    };
+
+                    pending.push((
+                        instance_path,
+                        prefix,
+                        value,
+                        target_name.clone(),
+                        footprint_info.clone(),
+                        extra,
+                        fid_opt,
+                        ak_opt,
+                        None,
+                    ));
                 }
             } else if is_container {
-                // This is a container - recurse into it
                 for idx in 0..instance_count {
                     let sub_prefix = if instance_count > 1 {
                         if path_prefix.is_empty() {
@@ -646,19 +788,18 @@ impl<'a> NetlistBuilder<'a> {
                         format!("{}.{}", path_prefix, field_name)
                     };
 
-                    // Need a fresh visited set for this branch to allow shared types
                     let mut branch_visited = std::collections::HashSet::new();
-                    self.collect_components_recursive(
+                    self.collect_components_pending(
                         type_module_id,
                         &sub_prefix,
                         mapper,
                         &mut branch_visited,
+                        pending,
                     );
                 }
             }
         }
 
-        // Remove from visited so the same module type can be used in other branches
         visited.remove(&module_id);
     }
 
@@ -860,11 +1001,13 @@ impl<'a> NetlistBuilder<'a> {
             }
         }
 
-        // Find connected components in the graph via BFS
+        // Find connected components in the graph via BFS.
+        // Sort graph keys for deterministic traversal order.
         let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut net_counter = 0u32;
 
-        let all_nodes: Vec<String> = graph.keys().cloned().collect();
+        let mut all_nodes: Vec<String> = graph.keys().cloned().collect();
+        all_nodes.sort();
+
         for start_node in &all_nodes {
             if visited.contains(start_node) {
                 continue;
@@ -879,7 +1022,10 @@ impl<'a> NetlistBuilder<'a> {
             while let Some(current) = queue.pop_front() {
                 component.push(current.clone());
                 if let Some(neighbors) = graph.get(&current) {
-                    for neighbor in neighbors {
+                    // Sort neighbors for deterministic BFS order
+                    let mut sorted_neighbors: Vec<&String> = neighbors.iter().collect();
+                    sorted_neighbors.sort();
+                    for neighbor in sorted_neighbors {
                         if visited.insert(neighbor.clone()) {
                             queue.push_back(neighbor.clone());
                         }
@@ -901,8 +1047,11 @@ impl<'a> NetlistBuilder<'a> {
             }
 
             if net_nodes.len() >= 2 {
-                net_counter += 1;
-                let net_name = format!("Net{}", net_counter);
+                // Derive a descriptive net name from the endpoint paths.
+                // Use the alphabetically first path in the connected component
+                // (which is stable across builds since we sorted all_nodes).
+                component.sort();
+                let net_name = derive_net_name(&component);
                 let mut net = Net::new(net_name);
                 for node in net_nodes {
                     net.add_node(node);
@@ -1945,5 +2094,248 @@ mod tests {
             0,
             "Interface modules should not become components"
         );
+    }
+
+    #[test]
+    fn test_natord_cmp() {
+        use std::cmp::Ordering;
+        assert_eq!(natord_cmp("R1", "R2"), Ordering::Less);
+        assert_eq!(natord_cmp("R2", "R10"), Ordering::Less);
+        assert_eq!(natord_cmp("R10", "R2"), Ordering::Greater);
+        assert_eq!(natord_cmp("C1", "R1"), Ordering::Less);
+        assert_eq!(natord_cmp("R1", "R1"), Ordering::Equal);
+        assert_eq!(natord_cmp("SW1", "U1"), Ordering::Less);
+    }
+
+    #[test]
+    fn test_deterministic_designator_assignment() {
+        // Build the same design twice and verify identical results
+        let build_netlist = || {
+            let mut design = Design::new();
+
+            let resistor_id = design.create_module("Resistor", ModuleKind::Module);
+            design.add_field(resistor_id, "p1", FieldKind::pin("1"));
+            design.add_field(resistor_id, "p2", FieldKind::pin("2"));
+
+            let cap_id = design.create_module("Capacitor", ModuleKind::Module);
+            design.add_field(cap_id, "p1", FieldKind::pin("1"));
+            design.add_field(cap_id, "p2", FieldKind::pin("2"));
+
+            let app_id = design.create_module("App", ModuleKind::Module);
+
+            // Add instances in varying order to test determinism
+            design.add_field(
+                app_id,
+                "r2",
+                FieldKind::Instance {
+                    type_ref: QualifiedName::simple("Resistor"),
+                    count: None,
+                    resolved_type: Some(resistor_id),
+                },
+            );
+            design.add_field(
+                app_id,
+                "c1",
+                FieldKind::Instance {
+                    type_ref: QualifiedName::simple("Capacitor"),
+                    count: None,
+                    resolved_type: Some(cap_id),
+                },
+            );
+            design.add_field(
+                app_id,
+                "r1",
+                FieldKind::Instance {
+                    type_ref: QualifiedName::simple("Resistor"),
+                    count: None,
+                    resolved_type: Some(resistor_id),
+                },
+            );
+
+            let builder = NetlistBuilder::new(&design);
+            builder.build().unwrap()
+        };
+
+        let netlist1 = build_netlist();
+        let netlist2 = build_netlist();
+
+        // Component count should match
+        assert_eq!(netlist1.component_count(), netlist2.component_count());
+
+        // Component references and order should be identical
+        let refs1: Vec<&str> = netlist1.components.iter().map(|c| c.reference.as_str()).collect();
+        let refs2: Vec<&str> = netlist2.components.iter().map(|c| c.reference.as_str()).collect();
+        assert_eq!(refs1, refs2, "Designators must be identical across builds");
+
+        // Verify sorting: C1 before R1 before R2
+        assert_eq!(refs1, vec!["C1", "R1", "R2"]);
+    }
+
+    #[test]
+    fn test_deterministic_designator_by_hierarchy_path() {
+        // Components should be numbered by their hierarchy path, not insertion order
+        let mut design = Design::new();
+
+        let resistor_id = design.create_module("Resistor", ModuleKind::Module);
+        design.add_field(resistor_id, "p1", FieldKind::pin("1"));
+        design.add_field(resistor_id, "p2", FieldKind::pin("2"));
+
+        let app_id = design.create_module("App", ModuleKind::Module);
+
+        // Add r_z before r_a -- alphabetically r_a should get R1
+        design.add_field(
+            app_id,
+            "r_z",
+            FieldKind::Instance {
+                type_ref: QualifiedName::simple("Resistor"),
+                count: None,
+                resolved_type: Some(resistor_id),
+            },
+        );
+        design.add_field(
+            app_id,
+            "r_a",
+            FieldKind::Instance {
+                type_ref: QualifiedName::simple("Resistor"),
+                count: None,
+                resolved_type: Some(resistor_id),
+            },
+        );
+
+        let builder = NetlistBuilder::new(&design);
+        let netlist = builder.build().unwrap();
+
+        assert_eq!(netlist.component_count(), 2);
+
+        // r_a should be R1 (alphabetically first), r_z should be R2
+        let r1 = netlist.get_component("R1").unwrap();
+        assert_eq!(
+            r1.properties.get("instance").map(|s| s.as_str()),
+            Some("r_a"),
+            "R1 should be the alphabetically first instance (r_a)"
+        );
+
+        let r2 = netlist.get_component("R2").unwrap();
+        assert_eq!(
+            r2.properties.get("instance").map(|s| s.as_str()),
+            Some("r_z"),
+            "R2 should be the alphabetically second instance (r_z)"
+        );
+    }
+
+    #[test]
+    fn test_deterministic_net_names() {
+        // Net names should be derived from endpoint paths, not sequential counters
+        let mut design = Design::new();
+
+        let resistor_id = design.create_module("Resistor", ModuleKind::Module);
+        design.add_field(resistor_id, "p1", FieldKind::pin("1"));
+        design.add_field(resistor_id, "p2", FieldKind::pin("2"));
+
+        let app_id = design.create_module("App", ModuleKind::Module);
+        design.add_field(
+            app_id,
+            "r1",
+            FieldKind::Instance {
+                type_ref: QualifiedName::simple("Resistor"),
+                count: None,
+                resolved_type: Some(resistor_id),
+            },
+        );
+        design.add_field(
+            app_id,
+            "r2",
+            FieldKind::Instance {
+                type_ref: QualifiedName::simple("Resistor"),
+                count: None,
+                resolved_type: Some(resistor_id),
+            },
+        );
+
+        // Connect r1.p2 ~ r2.p1
+        let ep1 = ConnectionEndpoint::field(FieldPath::new(vec![
+            FieldPathPart::Name("r1".to_string()),
+            FieldPathPart::Name("p2".to_string()),
+        ]));
+        let ep2 = ConnectionEndpoint::field(FieldPath::new(vec![
+            FieldPathPart::Name("r2".to_string()),
+            FieldPathPart::Name("p1".to_string()),
+        ]));
+        design.add_connection(app_id, ep1, ep2);
+        design.rebuild_connection_graph();
+
+        let builder = NetlistBuilder::new(&design)
+            .with_entry_module(app_id);
+        let netlist = builder.build().unwrap();
+
+        // Net name should be derived from sorted paths, not "Net1"
+        if !netlist.nets.is_empty() {
+            let net = &netlist.nets[0];
+            // Name should NOT be "Net1" - it should be derived from the endpoint paths
+            assert!(
+                !net.name.starts_with("Net"),
+                "Net name should be descriptive, not 'Net{}'. Got: '{}'",
+                1, net.name
+            );
+        }
+
+        // Running again should produce the same net names
+        let builder2 = NetlistBuilder::new(&design)
+            .with_entry_module(app_id);
+        let netlist2 = builder2.build().unwrap();
+
+        let names1: Vec<&str> = netlist.nets.iter().map(|n| n.name.as_str()).collect();
+        let names2: Vec<&str> = netlist2.nets.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names1, names2, "Net names must be identical across builds");
+    }
+
+    #[test]
+    fn test_derive_net_name() {
+        assert_eq!(derive_net_name(&["power_3v3.hv".to_string()]), "power_3v3_hv");
+        assert_eq!(derive_net_name(&["r1.p2".to_string(), "r2.p1".to_string()]), "r1_p2");
+        assert_eq!(derive_net_name(&[]), "Net");
+    }
+
+    #[test]
+    fn test_components_sorted_in_output() {
+        // Verify that the final netlist has components sorted by reference
+        let mut design = Design::new();
+
+        let resistor_id = design.create_module("Resistor", ModuleKind::Module);
+        design.add_field(resistor_id, "p1", FieldKind::pin("1"));
+        design.add_field(resistor_id, "p2", FieldKind::pin("2"));
+
+        let cap_id = design.create_module("Capacitor", ModuleKind::Module);
+        design.add_field(cap_id, "p1", FieldKind::pin("1"));
+        design.add_field(cap_id, "p2", FieldKind::pin("2"));
+
+        let led_id = design.create_module("LED", ModuleKind::Module);
+        design.add_field(led_id, "anode", FieldKind::pin("1"));
+        design.add_field(led_id, "cathode", FieldKind::pin("2"));
+
+        let app_id = design.create_module("App", ModuleKind::Module);
+        // Add in reverse alphabetical order
+        design.add_field(app_id, "led1", FieldKind::Instance {
+            type_ref: QualifiedName::simple("LED"),
+            count: None,
+            resolved_type: Some(led_id),
+        });
+        design.add_field(app_id, "r1", FieldKind::Instance {
+            type_ref: QualifiedName::simple("Resistor"),
+            count: None,
+            resolved_type: Some(resistor_id),
+        });
+        design.add_field(app_id, "c1", FieldKind::Instance {
+            type_ref: QualifiedName::simple("Capacitor"),
+            count: None,
+            resolved_type: Some(cap_id),
+        });
+
+        let builder = NetlistBuilder::new(&design);
+        let netlist = builder.build().unwrap();
+
+        let refs: Vec<&str> = netlist.components.iter().map(|c| c.reference.as_str()).collect();
+        // Should be sorted: C1, D1, R1
+        assert_eq!(refs, vec!["C1", "D1", "R1"], "Components should be sorted by reference");
     }
 }
