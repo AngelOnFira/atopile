@@ -544,4 +544,132 @@ mod tests {
             _ => panic!("Expected Quantity"),
         }
     }
+
+    // --- Dimensional analysis tests ---
+
+    #[test]
+    fn test_fold_add_same_unit_volts() {
+        // 5V + 3V should fold to 8V
+        let a = Literal::from_quantity(5.0, Unit::Volt);
+        let b = Literal::from_quantity(3.0, Unit::Volt);
+        let lits = vec![a, b];
+        let result = fold_add(&lits).unwrap();
+        match result {
+            Literal::Quantity(q) => {
+                assert_eq!(q.unit(), Unit::Volt);
+                assert!((q.min().unwrap().value() - 8.0).abs() < 1e-10);
+            }
+            _ => panic!("Expected Quantity"),
+        }
+    }
+
+    #[test]
+    fn test_fold_add_incompatible_units_returns_none() {
+        // 5V + 3Ohm should NOT fold (incompatible units)
+        let a = Literal::from_quantity(5.0, Unit::Volt);
+        let b = Literal::from_quantity(3.0, Unit::Ohm);
+        let lits = vec![a, b];
+        let result = fold_add(&lits);
+        assert!(result.is_none(), "Adding Volts and Ohms should not fold");
+    }
+
+    #[test]
+    fn test_fold_subtract_incompatible_units_returns_none() {
+        // 5V - 3Ohm should NOT fold (incompatible units)
+        let a = Literal::from_quantity(5.0, Unit::Volt);
+        let b = Literal::from_quantity(3.0, Unit::Ohm);
+        let lits = vec![a, b];
+        let result = fold_subtract(&lits);
+        assert!(result.is_none(), "Subtracting Ohms from Volts should not fold");
+    }
+
+    #[test]
+    fn test_fold_multiply_quantity_by_dimensionless_scalar() {
+        // 5V * 2 should fold to 10V (dimensionless multiplier)
+        let q = Literal::from_quantity(5.0, Unit::Volt);
+        let scalar = Literal::Integer(2);
+        let lits = vec![q, scalar];
+        let result = fold_multiply(&lits).unwrap();
+        match result {
+            Literal::Quantity(q) => {
+                assert_eq!(q.unit(), Unit::Volt);
+                assert!((q.min().unwrap().value() - 10.0).abs() < 1e-10);
+            }
+            _ => panic!("Expected Quantity"),
+        }
+    }
+
+    #[test]
+    fn test_fold_multiply_incompatible_units_returns_none() {
+        // Volt * Farad has no defined result unit -> should not fold
+        let a = Literal::from_quantity(5.0, Unit::Volt);
+        let b = Literal::from_quantity(3.0, Unit::Farad);
+        let lits = vec![a, b];
+        let result = fold_multiply(&lits);
+        assert!(result.is_none(), "Multiplying Volts and Farads should not fold");
+    }
+
+    #[test]
+    fn test_fold_divide_same_unit_returns_dimensionless() {
+        // 10V / 5V should fold to dimensionless 2
+        let a = Literal::from_quantity(10.0, Unit::Volt);
+        let b = Literal::from_quantity(5.0, Unit::Volt);
+        let lits = vec![a, b];
+        let result = fold_divide(&lits).unwrap();
+        match result {
+            Literal::Quantity(q) => {
+                assert_eq!(q.unit(), Unit::Dimensionless);
+                assert!((q.min().unwrap().value() - 2.0).abs() < 1e-10);
+            }
+            _ => panic!("Expected Quantity"),
+        }
+    }
+
+    #[test]
+    fn test_fold_add_same_unit_ohms() {
+        // 10kohm + 5kohm should fold to 15kohm
+        let a = Literal::from_quantity(10_000.0, Unit::Ohm);
+        let b = Literal::from_quantity(5_000.0, Unit::Ohm);
+        let lits = vec![a, b];
+        let result = fold_add(&lits).unwrap();
+        match result {
+            Literal::Quantity(q) => {
+                assert_eq!(q.unit(), Unit::Ohm);
+                assert!((q.min().unwrap().value() - 15_000.0).abs() < 1e-10);
+            }
+            _ => panic!("Expected Quantity"),
+        }
+    }
+
+    #[test]
+    fn test_fold_subtract_same_unit() {
+        // 10V - 3V should fold to 7V
+        let a = Literal::from_quantity(10.0, Unit::Volt);
+        let b = Literal::from_quantity(3.0, Unit::Volt);
+        let lits = vec![a, b];
+        let result = fold_subtract(&lits).unwrap();
+        match result {
+            Literal::Quantity(q) => {
+                assert_eq!(q.unit(), Unit::Volt);
+                assert!((q.min().unwrap().value() - 7.0).abs() < 1e-10);
+            }
+            _ => panic!("Expected Quantity"),
+        }
+    }
+
+    #[test]
+    fn test_fold_divide_quantity_by_scalar() {
+        // 10V / 2 should fold to 5V
+        let q = Literal::from_quantity(10.0, Unit::Volt);
+        let scalar = Literal::Integer(2);
+        let lits = vec![q, scalar];
+        let result = fold_divide(&lits).unwrap();
+        match result {
+            Literal::Quantity(q) => {
+                assert_eq!(q.unit(), Unit::Volt);
+                assert!((q.min().unwrap().value() - 5.0).abs() < 1e-10);
+            }
+            _ => panic!("Expected Quantity"),
+        }
+    }
 }
