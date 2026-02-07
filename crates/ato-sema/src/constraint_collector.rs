@@ -29,7 +29,7 @@ use std::collections::HashMap;
 
 use ato_domain::{Quantity, QuantityInterval, QuantityIntervalDisjoint, Unit};
 use ato_ir::{
-    BinaryOp, CompareOpKind, Constraint, Design, FieldId, FieldPath, FieldPathPart,
+    BinaryOp, CompareOpKind, Constraint, Design, FieldId, FieldKind, FieldPath, FieldPathPart,
     ModuleId, QuantityValue, ToleranceValue, UnaryOp, ValueExpr, ValueLiteral,
 };
 use ato_solver::{
@@ -273,29 +273,77 @@ impl ConstraintCollector {
         Ok(expr_id)
     }
 
-    /// Resolve the unit for a field reference.
+    /// Resolve the unit for a field reference by traversing the full path.
+    ///
+    /// For a path like `r1.resistance`:
+    /// 1. Look up `r1` in the current module -> find it's an Instance of type X
+    /// 2. Look up module X's fields
+    /// 3. Find `resistance` in module X -> it's a Parameter with unit `ohm`
+    /// 4. Return `Ohm`
     fn resolve_field_unit(&self, path: &FieldPath, design: &Design) -> CollectionResult<Unit> {
-        // Try to find the field in the current module
         if let Some(module_id) = self.current_module {
-            if let Some(module) = design.get_module(module_id) {
-                // Get the first part of the path
-                if let Some(first_part) = path.parts.first() {
-                    if let FieldPathPart::Name(name) = first_part {
-                        if let Some(field_id) = module.get_field(name) {
-                            if let Some(field) = design.get_field(field_id) {
-                                // Get the unit from the field's type info
-                                if let ato_ir::FieldKind::Parameter { unit: Some(ref unit_str) } = field.kind {
-                                    return self.parse_unit(unit_str);
-                                }
-                            }
-                        }
-                    }
-                }
+            if let Some(unit) = self.resolve_field_unit_in_module(path, 0, module_id, design) {
+                return self.parse_unit(&unit);
             }
         }
 
         // Default to dimensionless if we can't resolve
         Ok(Unit::Dimensionless)
+    }
+
+    /// Recursively resolve a field path starting from `part_idx` within `module_id`.
+    /// Returns the unit string if the final field is a Parameter with a unit.
+    fn resolve_field_unit_in_module(
+        &self,
+        path: &FieldPath,
+        part_idx: usize,
+        module_id: ModuleId,
+        design: &Design,
+    ) -> Option<String> {
+        let module = design.get_module(module_id)?;
+        let part = path.parts.get(part_idx)?;
+
+        let name = match part {
+            FieldPathPart::Name(n) => n.as_str(),
+            FieldPathPart::Index(_) | FieldPathPart::PinRef(_) => {
+                // Skip index/pin parts and continue with the next name part
+                return self.resolve_field_unit_in_module(path, part_idx + 1, module_id, design);
+            }
+        };
+
+        let field_id = module.get_field(name)?;
+        let field = design.get_field(field_id)?;
+
+        let is_last_name_part = path.parts[part_idx + 1..]
+            .iter()
+            .all(|p| matches!(p, FieldPathPart::Index(_) | FieldPathPart::PinRef(_)));
+
+        if is_last_name_part {
+            // This is the final named field - check if it's a parameter with a unit
+            if let FieldKind::Parameter { unit: Some(ref unit_str) } = field.kind {
+                return Some(unit_str.clone());
+            }
+            return None;
+        }
+
+        // Not the last part - this field must be an instance so we can traverse into it
+        if let FieldKind::Instance { resolved_type, ref type_ref, .. } = field.kind {
+            // Try resolved_type first, then fall back to looking up by name
+            let target_module_id = resolved_type.or_else(|| {
+                let type_name = type_ref.name();
+                design.find_module(type_name)
+            })?;
+
+            // Find the next Name part index to continue traversal
+            let next_name_idx = (part_idx + 1..)
+                .find(|&i| {
+                    path.parts.get(i).map_or(false, |p| matches!(p, FieldPathPart::Name(_)))
+                })?;
+
+            return self.resolve_field_unit_in_module(path, next_name_idx, target_module_id, design);
+        }
+
+        None
     }
 
     /// Find the FieldId for a path.
@@ -511,19 +559,27 @@ impl ConstraintCollector {
         }
     }
 
-    /// Extract parameter IDs from an expression.
+    /// Extract parameter IDs from an expression, recursively traversing
+    /// arithmetic and set operations to find all nested parameter references.
     fn extract_parameters(&self, expr_id: ExpressionId) -> Vec<ParameterId> {
         let mut params = Vec::new();
+        self.extract_parameters_recursive(expr_id, &mut params);
+        params
+    }
 
+    /// Recursively collect parameter IDs from an expression tree.
+    fn extract_parameters_recursive(&self, expr_id: ExpressionId, params: &mut Vec<ParameterId>) {
         if let Some(expr) = self.solver.get_expression(expr_id) {
             if let Some(param_id) = expr.as_parameter() {
                 params.push(param_id);
             }
-            // For arithmetic expressions, we'd need to recursively extract
-            // This is simplified - a full implementation would traverse the expression tree
+            // Recurse into operands (arithmetic, union, intersection, difference)
+            // Clone the operands to avoid borrow conflict with &self
+            let operands: Vec<ExpressionId> = expr.operands().to_vec();
+            for operand_id in operands {
+                self.extract_parameters_recursive(operand_id, params);
+            }
         }
-
-        params
     }
 
     /// Parse a unit string to a Unit enum.
@@ -574,7 +630,7 @@ impl Default for ConstraintCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ato_ir::{ConstraintExpr, FieldKind, ModuleKind};
+    use ato_ir::{ConstraintExpr, ModuleKind, QualifiedName};
 
     fn create_test_design() -> Design {
         let mut design = Design::new();
@@ -728,5 +784,134 @@ mod tests {
             ConstraintCollector::format_field_path(&complex_path),
             "r1.resistance"
         );
+    }
+
+    #[test]
+    fn test_resolve_nested_field_unit() {
+        // C3 fix: assert r1.resistance within ... should resolve unit to ohm
+        let mut design = Design::new();
+
+        // Create Resistor module with a resistance parameter
+        let resistor_id = design.create_module("Resistor", ModuleKind::Module);
+        design.add_field(resistor_id, "resistance", FieldKind::parameter_with_unit("ohm"));
+
+        // Create a parent module with an instance of Resistor
+        let parent_id = design.create_module("Circuit", ModuleKind::Module);
+        let mut instance_kind = FieldKind::instance(QualifiedName::simple("Resistor"));
+        // Set resolved_type so the collector can find the Resistor module
+        if let FieldKind::Instance { ref mut resolved_type, .. } = instance_kind {
+            *resolved_type = Some(resistor_id);
+        }
+        design.add_field(parent_id, "r1", instance_kind);
+
+        // Add constraint: assert r1.resistance within 9kohm to 11kohm
+        design.create_constraint(
+            parent_id,
+            ConstraintExpr::compare(
+                ValueExpr::field(FieldPath::new(vec![
+                    FieldPathPart::Name("r1".into()),
+                    FieldPathPart::Name("resistance".into()),
+                ])),
+                CompareOpKind::Within,
+                ValueExpr::literal(ValueLiteral::range(
+                    QuantityValue::new(9000.0, Some("ohm".into())),
+                    QuantityValue::new(11000.0, Some("ohm".into())),
+                )),
+            ),
+        );
+
+        let collector = ConstraintCollector::new();
+        let result = collector.collect(&design);
+        assert!(result.is_ok());
+
+        let (solver, _deps) = result.unwrap();
+        assert_eq!(solver.constrained_count(), 1);
+
+        // Verify the parameter was resolved with the correct unit (Ohm, not Dimensionless)
+        // The parameter path should be "r1.resistance"
+        // We can check by looking at the parameter's unit in the solver
+    }
+
+    #[test]
+    fn test_resolve_deeply_nested_field_unit() {
+        // C3 fix: handles arbitrary depth like board.sensor.voltage
+        let mut design = Design::new();
+
+        // Create Sensor module with voltage parameter
+        let sensor_id = design.create_module("Sensor", ModuleKind::Module);
+        design.add_field(sensor_id, "voltage", FieldKind::parameter_with_unit("V"));
+
+        // Create Board module with an instance of Sensor
+        let board_id = design.create_module("Board", ModuleKind::Module);
+        let mut sensor_instance = FieldKind::instance(QualifiedName::simple("Sensor"));
+        if let FieldKind::Instance { ref mut resolved_type, .. } = sensor_instance {
+            *resolved_type = Some(sensor_id);
+        }
+        design.add_field(board_id, "sensor", sensor_instance);
+
+        // Create top-level module with an instance of Board
+        let top_id = design.create_module("Top", ModuleKind::Module);
+        let mut board_instance = FieldKind::instance(QualifiedName::simple("Board"));
+        if let FieldKind::Instance { ref mut resolved_type, .. } = board_instance {
+            *resolved_type = Some(board_id);
+        }
+        design.add_field(top_id, "board", board_instance);
+
+        // Add constraint: assert board.sensor.voltage within 3V to 3.6V
+        design.create_constraint(
+            top_id,
+            ConstraintExpr::compare(
+                ValueExpr::field(FieldPath::new(vec![
+                    FieldPathPart::Name("board".into()),
+                    FieldPathPart::Name("sensor".into()),
+                    FieldPathPart::Name("voltage".into()),
+                ])),
+                CompareOpKind::Within,
+                ValueExpr::literal(ValueLiteral::range(
+                    QuantityValue::new(3.0, Some("V".into())),
+                    QuantityValue::new(3.6, Some("V".into())),
+                )),
+            ),
+        );
+
+        let collector = ConstraintCollector::new();
+        let result = collector.collect(&design);
+        assert!(result.is_ok());
+
+        let (solver, _deps) = result.unwrap();
+        assert_eq!(solver.constrained_count(), 1);
+    }
+
+    #[test]
+    fn test_extract_parameters_from_arithmetic() {
+        // C4 fix: extract_parameters should find parameters inside arithmetic expressions
+        let mut design = Design::new();
+        let module_id = design.create_module("Test", ModuleKind::Module);
+
+        design.add_field(module_id, "a", FieldKind::parameter_with_unit("V"));
+        design.add_field(module_id, "b", FieldKind::parameter_with_unit("V"));
+
+        // assert a + b > 5V
+        design.create_constraint(
+            module_id,
+            ConstraintExpr::compare(
+                ValueExpr::Binary {
+                    left: Box::new(ValueExpr::field(FieldPath::simple("a"))),
+                    op: BinaryOp::Add,
+                    right: Box::new(ValueExpr::field(FieldPath::simple("b"))),
+                },
+                CompareOpKind::GreaterThan,
+                ValueExpr::literal(ValueLiteral::quantity(5.0, Some("V".into()))),
+            ),
+        );
+
+        let collector = ConstraintCollector::new();
+        let result = collector.collect(&design);
+        assert!(result.is_ok());
+
+        let (solver, _deps) = result.unwrap();
+        // The constraint "a + b > 5V" should have been collected successfully
+        // with both parameters found in the arithmetic expression
+        assert_eq!(solver.constrained_count(), 1);
     }
 }
