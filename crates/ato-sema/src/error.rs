@@ -105,6 +105,13 @@ pub enum SemaError {
     CircularImport {
         file: String,
     },
+
+    /// Unsupported feature encountered during lowering.
+    #[error("unsupported feature: {feature}")]
+    UnsupportedFeature {
+        feature: String,
+        span: Option<Span>,
+    },
 }
 
 impl SemaError {
@@ -204,6 +211,14 @@ impl SemaError {
         }
     }
 
+    /// Create an unsupported feature error.
+    pub fn unsupported_feature(feature: impl Into<String>, span: impl Into<Option<Span>>) -> Self {
+        Self::UnsupportedFeature {
+            feature: feature.into(),
+            span: span.into(),
+        }
+    }
+
     /// Get the source span for this error.
     pub fn span(&self) -> Option<Span> {
         match self {
@@ -221,6 +236,7 @@ impl SemaError {
             SemaError::ParseError { .. } => None,
             SemaError::IoError { .. } => None,
             SemaError::CircularImport { .. } => None,
+            SemaError::UnsupportedFeature { span, .. } => *span,
         }
     }
 }
@@ -251,11 +267,13 @@ impl ErrorCollector {
     }
 
     /// Get the number of errors.
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.errors.len()
     }
 
     /// Check if the collection is empty.
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.errors.is_empty()
     }

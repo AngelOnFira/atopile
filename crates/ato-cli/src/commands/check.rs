@@ -173,6 +173,9 @@ fn convert_sema_errors(errors: &[SemaError]) -> Vec<SemanticErrorInfo> {
             SemaError::CircularImport { file } => {
                 (format!("circular import detected: '{}'", file), None, Some("Check for import cycles between files".into()))
             }
+            SemaError::UnsupportedFeature { feature, span } => {
+                (format!("unsupported feature: {}", feature), span_to_tuple(span), None)
+            }
         };
         SemanticErrorInfo { message, span, help }
     }).collect()

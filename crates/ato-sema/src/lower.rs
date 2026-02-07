@@ -399,9 +399,10 @@ impl<'a> Lowerer<'a> {
         let _constraint_id = self.design.create_constraint(module_id, constraint_expr);
     }
 
-    /// Lower an assignment statement to a constraint (for physical values)
+    /// Lower an assignment statement to a constraint (for physical values,
+    /// strings, booleans, and arithmetic expressions)
     /// or apply template args from `new` expressions.
-    fn lower_assignment(&mut self, assign: &Assignment, module_id: ModuleId, _scope: &Scope) {
+    fn lower_assignment(&mut self, assign: &Assignment, module_id: ModuleId, scope: &Scope) {
         // Handle template arguments from `new` expressions
         if let Assignable::New(new_expr) = &assign.value {
             if let Some(template) = &new_expr.template {
@@ -426,33 +427,34 @@ impl<'a> Lowerer<'a> {
             return;
         }
 
-        let value_literal = match &assign.value {
-            Assignable::Physical(phys) => self.lower_physical_literal(phys),
-            Assignable::Arithmetic(expr) => {
-                if let Expression::Literal(Literal::Physical(phys)) = expr {
-                    self.lower_physical_literal(phys)
-                } else {
-                    return;
-                }
-            }
-            _ => return,
-        };
-
         let target_path = match &assign.target {
             AssignTarget::FieldRef(field_ref) => self.lower_field_ref(field_ref),
             AssignTarget::Declaration(decl) => self.lower_field_ref(&decl.field),
         };
 
-        let op_kind = match &assign.value {
-            Assignable::Physical(PhysicalLiteral::Quantity(_)) => IrCompareOpKind::Is,
-            Assignable::Physical(PhysicalLiteral::Range(_)) => IrCompareOpKind::Within,
-            Assignable::Physical(PhysicalLiteral::Bilateral(_)) => IrCompareOpKind::Within,
-            _ => IrCompareOpKind::Is,
+        let (op_kind, right_expr) = match &assign.value {
+            Assignable::Physical(phys) => {
+                let op = match phys {
+                    PhysicalLiteral::Quantity(_) => IrCompareOpKind::Is,
+                    PhysicalLiteral::Range(_) => IrCompareOpKind::Within,
+                    PhysicalLiteral::Bilateral(_) => IrCompareOpKind::Within,
+                };
+                (op, ValueExpr::literal(self.lower_physical_literal(phys)))
+            }
+            Assignable::String(s) => {
+                (IrCompareOpKind::Is, ValueExpr::literal(ValueLiteral::String(s.value.clone())))
+            }
+            Assignable::Boolean(b) => {
+                (IrCompareOpKind::Is, ValueExpr::literal(ValueLiteral::Bool(b.value)))
+            }
+            Assignable::Arithmetic(expr) => {
+                (IrCompareOpKind::Is, self.lower_expression(expr, scope))
+            }
+            Assignable::New(_) => unreachable!(), // handled above
         };
 
         let left = ValueExpr::field(target_path);
-        let right = ValueExpr::literal(value_literal);
-        let constraint_expr = ConstraintExpr::compare(left, op_kind, right);
+        let constraint_expr = ConstraintExpr::compare(left, op_kind, right_expr);
         self.design.create_constraint(module_id, constraint_expr);
     }
 
@@ -511,7 +513,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn lower_comparison(&self, comparison: &Comparison, scope: &Scope) -> ConstraintExpr {
+    fn lower_comparison(&mut self, comparison: &Comparison, scope: &Scope) -> ConstraintExpr {
         let left = self.lower_expression(&comparison.left, scope);
         let operations = comparison.operations
             .iter()
@@ -534,7 +536,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn lower_expression(&self, expr: &Expression, scope: &Scope) -> ValueExpr {
+    fn lower_expression(&mut self, expr: &Expression, scope: &Scope) -> ValueExpr {
         match expr {
             Expression::FieldRef(field_ref) => {
                 let path = self.lower_field_ref(field_ref);
@@ -560,7 +562,12 @@ impl<'a> Lowerer<'a> {
             Expression::Group(inner) => {
                 ValueExpr::Group(Box::new(self.lower_expression(inner, scope)))
             }
-            Expression::FunctionCall(_) => {
+            Expression::FunctionCall(call) => {
+                self.errors.push(SemaError::unsupported_feature(
+                    format!("function call '{}' is not supported in ato", call.name.name),
+                    call.span,
+                ));
+                // Return a placeholder so lowering can continue
                 ValueExpr::literal(ValueLiteral::Bool(false))
             }
         }
@@ -774,32 +781,35 @@ impl<'a> Lowerer<'a> {
             return;
         }
 
-        let value_literal = match &assign.value {
-            Assignable::Physical(phys) => self.lower_physical_literal(phys),
-            Assignable::Arithmetic(expr) => {
-                if let Expression::Literal(Literal::Physical(phys)) = expr {
-                    self.lower_physical_literal(phys)
-                } else { return; }
-            }
-            _ => return,
-        };
-
         let target_path = match &assign.target {
             AssignTarget::FieldRef(field_ref) => self.lower_field_ref(field_ref),
             AssignTarget::Declaration(decl) => self.lower_field_ref(&decl.field),
         };
         let target_path = self.rewrite_loop_var_path(&target_path, loop_var, iterable_path, index);
 
-        let op_kind = match &assign.value {
-            Assignable::Physical(PhysicalLiteral::Quantity(_)) => IrCompareOpKind::Is,
-            Assignable::Physical(PhysicalLiteral::Range(_)) => IrCompareOpKind::Within,
-            Assignable::Physical(PhysicalLiteral::Bilateral(_)) => IrCompareOpKind::Within,
-            _ => IrCompareOpKind::Is,
+        let (op_kind, right_expr) = match &assign.value {
+            Assignable::Physical(phys) => {
+                let op = match phys {
+                    PhysicalLiteral::Quantity(_) => IrCompareOpKind::Is,
+                    PhysicalLiteral::Range(_) => IrCompareOpKind::Within,
+                    PhysicalLiteral::Bilateral(_) => IrCompareOpKind::Within,
+                };
+                (op, ValueExpr::literal(self.lower_physical_literal(phys)))
+            }
+            Assignable::String(s) => {
+                (IrCompareOpKind::Is, ValueExpr::literal(ValueLiteral::String(s.value.clone())))
+            }
+            Assignable::Boolean(b) => {
+                (IrCompareOpKind::Is, ValueExpr::literal(ValueLiteral::Bool(b.value)))
+            }
+            Assignable::Arithmetic(expr) => {
+                (IrCompareOpKind::Is, self.lower_expression(expr, scope))
+            }
+            Assignable::New(_) => unreachable!(), // handled above
         };
 
         let left = ValueExpr::field(target_path);
-        let right = ValueExpr::literal(value_literal);
-        self.design.create_constraint(module_id, ConstraintExpr::compare(left, op_kind, right));
+        self.design.create_constraint(module_id, ConstraintExpr::compare(left, op_kind, right_expr));
     }
 
     fn get_iteration_range(&self, field: &FieldRef, slice: Option<&Slice>, scope: &Scope) -> Vec<u32> {

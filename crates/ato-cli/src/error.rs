@@ -47,6 +47,7 @@ pub enum CliError {
     },
 
     /// Multiple files had errors.
+    #[allow(dead_code)]
     #[error("Build failed with {count} error(s)")]
     MultipleErrors { count: usize },
 }
