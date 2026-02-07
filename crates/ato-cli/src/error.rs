@@ -46,10 +46,12 @@ pub enum CliError {
         source_code: String,
     },
 
-    /// Multiple files had errors.
-    #[allow(dead_code)]
-    #[error("Build failed with {count} error(s)")]
-    MultipleErrors { count: usize },
+    /// Multiple errors accumulated during the build.
+    #[error("Build completed with {count} error(s)")]
+    BuildErrors {
+        count: usize,
+        errors: Vec<CliError>,
+    },
 }
 
 /// Information about a parse error.
@@ -138,8 +140,25 @@ impl CliError {
                 let report = create_solver_report(file, message, *span, source_code);
                 eprintln!("{:?}", report);
             }
-            CliError::MultipleErrors { count } => {
-                eprintln!("Error: Build failed with {} error(s)", count);
+            CliError::BuildErrors { count, errors } => {
+                eprintln!("\nBuild completed with {} error(s):", count);
+                for (i, err) in errors.iter().enumerate() {
+                    eprintln!("  {}. {}", i + 1, err);
+                    // Also print detailed diagnostics for each sub-error
+                    match err {
+                        CliError::Solver { file, message, span, source_code } => {
+                            let report = create_solver_report(file, message, *span, source_code);
+                            eprintln!("{:?}", report);
+                        }
+                        CliError::Semantic { file, errors: sub_errors, source_code } => {
+                            for sub_err in sub_errors {
+                                let report = create_semantic_report(file, sub_err, source_code);
+                                eprintln!("{:?}", report);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
     }

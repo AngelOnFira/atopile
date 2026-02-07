@@ -274,6 +274,7 @@ pub fn run(target: Option<&str>, output: Option<&Path>, verbose: bool) -> CliRes
     // Phase 2: Constraint solving
     let constraint_count = design.constraint_count();
     let mut _solved_params: HashMap<String, String> = HashMap::new();
+    let mut build_errors: Vec<CliError> = Vec::new();
 
     if constraint_count > 0 {
         let spinner = make_spinner(&format!("Solving {} constraints...", constraint_count));
@@ -308,16 +309,16 @@ pub fn run(target: Option<&str>, output: Option<&Path>, verbose: bool) -> CliRes
                     }
                     Err(SolverError::Contradiction(msg)) => {
                         spinner.finish_and_clear();
-                        return Err(CliError::solver(
+                        build_errors.push(CliError::solver(
                             &file_name,
                             format!("Constraint contradiction: {}", msg),
                             None,
-                            source,
+                            source.clone(),
                         ));
                     }
                     Err(SolverError::Timeout { iterations, elapsed }) => {
                         spinner.finish_and_clear();
-                        return Err(CliError::solver(
+                        build_errors.push(CliError::solver(
                             &file_name,
                             format!(
                                 "Solver timed out after {} iterations ({:?}). \
@@ -325,27 +326,27 @@ pub fn run(target: Option<&str>, output: Option<&Path>, verbose: bool) -> CliRes
                                 iterations, elapsed
                             ),
                             None,
-                            source,
+                            source.clone(),
                         ));
                     }
                     Err(e) => {
                         spinner.finish_and_clear();
-                        return Err(CliError::solver(
+                        build_errors.push(CliError::solver(
                             &file_name,
                             format!("Solver error: {}", e),
                             None,
-                            source,
+                            source.clone(),
                         ));
                     }
                 }
             }
             Err(e) => {
                 spinner.finish_and_clear();
-                return Err(CliError::solver(
+                build_errors.push(CliError::solver(
                     &file_name,
                     format!("Constraint collection failed: {}", e),
                     None,
-                    source,
+                    source.clone(),
                 ));
             }
         }
@@ -525,6 +526,15 @@ pub fn run(target: Option<&str>, output: Option<&Path>, verbose: bool) -> CliRes
     ));
     println!("  {} components, {} nets",
         netlist.component_count(), netlist.net_count());
+
+    // Report all accumulated errors
+    if !build_errors.is_empty() {
+        let count = build_errors.len();
+        return Err(CliError::BuildErrors {
+            count,
+            errors: build_errors,
+        });
+    }
 
     Ok(())
 }
