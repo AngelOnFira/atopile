@@ -180,7 +180,8 @@ impl fmt::Display for Unit {
 ///
 /// Returns the numeric value with the prefix applied.
 /// For example, "10k" returns 10000.0, "5m" returns 0.005.
-pub fn parse_si_prefix(s: &str) -> Option<(f64, &str)> {
+#[cfg(test)]
+fn parse_si_prefix(s: &str) -> Option<(f64, &str)> {
     let s = s.trim();
     if s.is_empty() {
         return None;

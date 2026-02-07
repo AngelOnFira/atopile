@@ -601,24 +601,6 @@ impl<'a> NameResolver<'a> {
     }
 }
 
-/// Resolve a field reference, returning the binding if found.
-pub fn resolve_field_ref(field_ref: &FieldRef, scope: &Scope) -> Option<Binding> {
-    let first_name = field_ref.parts.first()
-        .map(|p| p.name.name.as_str())?;
-
-    scope.lookup(first_name).cloned()
-}
-
-/// Resolve a connectable element.
-pub fn resolve_connectable(connectable: &Connectable, scope: &Scope) -> Option<Binding> {
-    match connectable {
-        Connectable::FieldRef(field_ref) => resolve_field_ref(field_ref, scope),
-        Connectable::SignalDef(_) | Connectable::PinDef(_) => {
-            // Inline definitions don't resolve to existing bindings
-            None
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {

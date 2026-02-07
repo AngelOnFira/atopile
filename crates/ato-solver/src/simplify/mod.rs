@@ -11,7 +11,7 @@ pub use canonical::CanonicalPass;
 pub use constant_fold::ConstantFoldPass;
 pub use structural::StructuralPass;
 
-use crate::expression::{Expression, ExpressionId, ExpressionStore, Literal};
+use crate::expression::{Expression, ExpressionId, ExpressionStore};
 use crate::predicate::{Predicate, PredicateId, PredicateKind};
 use std::collections::HashMap;
 
@@ -199,12 +199,6 @@ pub trait SimplificationPass {
 
     /// Run the simplification pass.
     fn run(&self, ctx: &mut SimplificationContext) -> SimplificationResult;
-}
-
-/// Evaluate a literal expression to check if it's a simple value.
-#[allow(dead_code)]
-pub fn try_evaluate_literal(expr: &Expression) -> Option<Literal> {
-    expr.as_literal().cloned()
 }
 
 /// Replace references to old_id with new_id in a predicate.

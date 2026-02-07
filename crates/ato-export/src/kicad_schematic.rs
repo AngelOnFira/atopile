@@ -463,6 +463,7 @@ impl Label {
 }
 
 /// Get the library ID for a component based on its reference prefix.
+#[cfg(test)]
 fn get_lib_id_for_component(comp: &NetlistComponent) -> String {
     let mapper = LibraryMapper::new();
     mapper.get_symbol_lib_id(&comp.reference)

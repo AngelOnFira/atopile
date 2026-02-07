@@ -22,7 +22,7 @@ enum FieldRefResolution {
     TypeInfoIncomplete,
     /// Root name found, type is fully resolved, but the sub-field doesn't exist
     /// on the resolved type. This is a definite error.
-    SubFieldNotFound(String),
+    SubFieldNotFound(#[allow(dead_code)] String),
 }
 
 /// Type checks an AST against a resolved design.
@@ -458,12 +458,6 @@ impl<'a> TypeChecker<'a> {
     }
 }
 
-/// Get the interface type of a module (for compatibility checking).
-pub fn get_module_interface(_design: &Design, _module_id: ModuleId) -> Option<String> {
-    // In a full implementation, this would return the primary interface type
-    // For now, just return the module name
-    None
-}
 
 #[cfg(test)]
 mod tests {

@@ -13,10 +13,8 @@ ato-ir = { workspace = true }
 ato-solver = { path = "../ato-solver" }
 ato-domain = { path = "../ato-domain" }
 thiserror = { workspace = true }
-miette = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
-semver = { workspace = true }
 git2 = { workspace = true }
 directories = { workspace = true }
 sha2 = { workspace = true }

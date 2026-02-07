@@ -78,13 +78,13 @@ fn stmt_summary(stmt: &ato_parser::Statement) -> String {
                 .join(".");
             format!("import {} from \"...\"", name)
         }
-        Statement::Assignment(assign) => {
+        Statement::Assignment(_) => {
             format!("assignment")
         }
-        Statement::Connection(conn) => {
+        Statement::Connection(_) => {
             "connection (~)".to_string()
         }
-        Statement::DirectedConnection(conn) => {
+        Statement::DirectedConnection(_) => {
             "directed connection (~>)".to_string()
         }
         Statement::PinDeclaration(_) => "pin declaration".to_string(),
